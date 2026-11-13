@@ -83,7 +83,7 @@ export function importFigProject(bytes, filename = 'Imported Figma design') {
     const type = node.type;
     const supported = new Set(['FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL', 'RECTANGLE', 'ROUNDED_RECTANGLE', 'ELLIPSE', 'STAR', 'POLYGON', 'LINE', 'VECTOR', 'TEXT', 'BOOLEAN_OPERATION', 'SLICE']);
     if (!supported.has(type)) unsupported.add(type || 'unknown');
-    const component = { type: type === 'TEXT' ? 'text' : 'default', name: safeName(node.name), resizable: true, attributes: { id: componentId, 'data-figma-node-id': id } };
+    const component = { type: type === 'TEXT' ? 'text' : 'default', name: safeName(node.name), resizable: true, attributes: { id: componentId, 'data-figma-node-id': id, 'data-figma-node-type': type } };
     const style = { position: 'absolute' };
     const transform = node.transform || {};
     const x = Number(transform.m02 || 0) - (parentId === null ? rootOrigin.x : 0);

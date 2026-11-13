@@ -12,22 +12,30 @@ function children(model) {
 }
 
 export function findCanvasBoard(components, fallback) {
+  const direct = Array.isArray(components?.models) ? components.models : Array.isArray(components) ? components : [];
   const all = [];
   const visit = items => items.forEach(item => {
     all.push(item);
     visit(children(item));
   });
-  visit(Array.isArray(components?.models) ? components.models : Array.isArray(components) ? components : []);
+  visit(direct);
 
-  const desktop = all.find(item => /^desktop$/i.test(String(value(item, 'name') || '')));
+  const desktop = direct.find(item => /^desktop$/i.test(String(value(item, 'name') || '')))
+    || all.find(item => /^desktop$/i.test(String(value(item, 'name') || '')));
   if (desktop) return desktop;
-  const frame = all.find(item => value(item, 'type') === 'frame' || /^frame$/i.test(String(value(item, 'name') || '')));
+  const frame = direct.find(item => value(item, 'type') === 'frame' || /^frame$/i.test(String(value(item, 'name') || '')))
+    || all.find(item => value(item, 'type') === 'frame' || /^frame$/i.test(String(value(item, 'name') || '')));
   if (frame) return frame;
-  const sized = all.find(item => {
+  const largestSized = items => items.filter(item => {
     const current = style(item);
     return Number.parseFloat(current.width) >= 600 && Number.parseFloat(current.height) >= 400;
-  });
-  return sized || fallback;
+  }).sort((a, b) => {
+    const aStyle = style(a), bStyle = style(b);
+    return (Number.parseFloat(bStyle.width) * Number.parseFloat(bStyle.height))
+      - (Number.parseFloat(aStyle.width) * Number.parseFloat(aStyle.height));
+  })[0];
+  const importedFrames = direct.filter(item => value(item, 'attributes')?.['data-figma-node-type'] === 'FRAME');
+  return largestSized(importedFrames) || largestSized(direct) || largestSized(all) || fallback;
 }
 
 export function centeredElementPosition(parentSize, elementSize, offset = 0) {
