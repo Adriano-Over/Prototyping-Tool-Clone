@@ -1,0 +1,31 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');const start=require('./test-server.cjs');
+const project=()=>({format:'forma-project',schemaVersion:2,name:'Team design',editor:{grapesjs:{pages:[{id:'page',component:{type:'wrapper',formaNodeId:'root',components:[{formaNodeId:'a',type:'text',content:'Original',style:{color:'red'}},{formaNodeId:'b',type:'text',content:'Second'}]}}],styles:[]}},forma:{components:[],variables:{mode:'light',modes:{light:{}}}},assets:[]});
+test('local accounts enforce roles, merge independent edits, deduplicate retries, stream events and preserve shared history',async t=>{
+  const server=await start(t),owner=server.account(),editor=server.account(),viewer=server.account(),commenter=server.account(),password='Disposable-fixture-password-2026';
+  for(const [client,name] of [[owner,'Owner'],[editor,'Editor'],[viewer,'Viewer'],[commenter,'Commenter']]){const result=await client.request('/auth/register',{name,email:name.toLowerCase()+'@fixture.invalid',password});assert.equal(result.status,200);assert.match(result.headers.get('set-cookie'),/HttpOnly; SameSite=Strict/);}
+  assert.equal((await owner.request('/auth/login',{email:'owner@fixture.invalid',password:'incorrect-password'})).status,401);
+  const created=await owner.request('/files',{project:project()});assert.equal(created.status,201);const id=created.value.id,route='/files/'+id;
+  assert.equal((await viewer.request(route)).status,404);
+  for(const [email,role] of [['editor','editor'],['viewer','viewer'],['commenter','commenter']])assert.equal((await owner.request(route+'/members',{email:email+'@fixture.invalid',role})).status,200);
+  const abort=new AbortController(),events=await editor.raw(route+'/events',{signal:abort.signal}),reader=events.body.getReader();t.after(()=>abort.abort());assert.equal(events.headers.get('content-type'),'text/event-stream');assert.match(new TextDecoder().decode((await reader.read()).value),/connected/);
+  const first={baseRevision:1,operationId:crypto.randomUUID(),changes:[{kind:'set',path:['nodes','a','props','style','color'],value:'blue'}]},second={baseRevision:1,operationId:crypto.randomUUID(),changes:[{kind:'set',path:['nodes','b','props','content'],value:'Edited by teammate'}]};
+  const results=await Promise.all([owner.request(route+'/ops',first),editor.request(route+'/ops',second)]);assert.deepEqual(results.map(result=>result.status),[200,200]);const shared=(await owner.request(route)).value;assert.equal(shared.graph.nodes.a.props.style.color,'blue');assert.equal(shared.graph.nodes.b.props.content,'Edited by teammate');assert.equal(shared.revision,3);
+  assert.match(new TextDecoder().decode((await reader.read()).value),/document/);
+  const duplicate=await owner.request(route+'/ops',first);assert.equal(duplicate.status,200);assert.equal(duplicate.value.duplicate,true);assert.equal(duplicate.value.revision,3);
+  assert.equal((await owner.request(route+'/ops',{...first,changes:[{...first.changes[0],value:'purple'}]})).status,409);
+  const conflict=await owner.request(route+'/ops',{...first,operationId:crypto.randomUUID()});assert.equal(conflict.status,409);assert.ok(conflict.value.conflicts.length);
+  assert.equal((await viewer.request(route+'/ops',{...second,baseRevision:3,operationId:crypto.randomUUID()})).status,403);
+  assert.equal((await commenter.request(route+'/ops',{...second,baseRevision:3,operationId:crypto.randomUUID()})).status,403);
+  assert.equal((await viewer.request(route+'/comments',{text:'Unauthorized'})).status,403);
+  const thread=await commenter.request(route+'/comments',{text:'Review this layer',nodeId:'a',author:{name:'Forged owner'}});assert.equal(thread.status,201);assert.equal(thread.value.messages[0].author.name,'Commenter');assert.equal((await editor.request(route+'/comments/'+thread.value.id,{text:'Updated'})).status,200);
+  assert.equal((await owner.request(route+'/comments/'+thread.value.id,{resolved:true})).status,200);assert.equal((await viewer.request(route+'/comments')).value.threads[0].resolved,true);
+  const version=await editor.request(route+'/versions',{name:'Reviewed'});assert.equal(version.status,201);assert.equal((await viewer.request(route+'/versions/'+version.value.id)).value.editor.grapesjs.pages.length,1);
+  const library=await owner.request(route+'/library',{name:'Team library'});assert.equal(library.status,201);assert.equal((await viewer.request('/libraries/'+library.value.id)).status,200);
+  const branch=await editor.request(route+'/branches',{name:'Explore'});assert.equal(branch.status,201);const branchRoute='/files/'+branch.value.id;
+  assert.equal((await editor.request(branchRoute+'/ops',{baseRevision:1,operationId:crypto.randomUUID(),changes:[{kind:'set',path:['nodes','b','props','content'],value:'From branch'}]})).status,200);
+  assert.equal((await owner.request(route+'/ops',{baseRevision:3,operationId:crypto.randomUUID(),changes:[{kind:'set',path:['nodes','a','props','style','color'],value:'green'}]})).status,200);
+  const merge=await editor.request(branchRoute+'/merge',{operationId:crypto.randomUUID()});assert.equal(merge.status,200);const merged=(await owner.request(route)).value;assert.equal(merged.graph.nodes.a.props.style.color,'green');assert.equal(merged.graph.nodes.b.props.content,'From branch');
+  assert.equal((await owner.request(route+'/members',{email:'editor@fixture.invalid',role:'remove'})).status,200);assert.equal((await editor.request(route)).status,404);assert.equal((await owner.request(route+'/audit')).value.entries.some(entry=>entry.action==='branch-merged'),true);
+  const stored=await fs.readFile(path.join(server.directory,'GrapesJS/workspace/workspace.json'),'utf8');assert.equal(stored.includes(password),false);assert.equal(stored.includes(owner.cookie.split('=')[1]),false);
+  await owner.request('/auth/logout',{});assert.equal((await owner.request(route)).status,401);abort.abort();
+});

@@ -1,0 +1,11 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {createRenderService} from '../render-service.mjs';
+const directory=await fs.mkdtemp(path.join(os.tmpdir(),'forma-render-check-'));
+const service=createRenderService({assetService:{portable:async value=>value},root:path.resolve('dist'),zipFiles:()=>{throw Error('unused');}});
+const documents=[{name:'First',width:400,height:240,html:'<div style="position:absolute;inset:0;width:400px;height:240px;background:linear-gradient(135deg,#00ff00,#0000ff);color:white;font:32px Inter">Export verification</div>'},{name:'Second',width:400,height:240,html:'<div style="position:absolute;inset:0;width:400px;height:240px;background:#123456;color:white;font:24px Inter">Second page</div>'}];
+const png=await service.render({format:'png',documents:documents.slice(0,1),scale:2,transparent:false});assert.equal(png.bytes.readUInt32BE(16),800);assert.equal(png.bytes.readUInt32BE(20),480);await fs.writeFile(path.join(directory,'check.png'),png.bytes);
+const pdf=await service.render({format:'pdf',documents,scale:1,transparent:false});assert.equal(pdf.bytes.toString('ascii',0,5),'%PDF-');await fs.writeFile(path.join(directory,'check.pdf'),pdf.bytes);
+console.log(JSON.stringify({directory,pngWidth:800,pngHeight:480,pdfBytes:pdf.bytes.length}));

@@ -1,0 +1,99 @@
+function value(model, key) {
+  return typeof model?.get === 'function' ? model.get(key) : model?.[key];
+}
+
+function style(model) {
+  return typeof model?.getStyle === 'function' ? model.getStyle() || {} : model?.style || {};
+}
+
+function children(model) {
+  const result = typeof model?.components === 'function' ? model.components() : model?.components;
+  return Array.isArray(result?.models) ? result.models : Array.isArray(result) ? result : [];
+}
+
+export function findCanvasBoard(components, fallback) {
+  const all = [];
+  const visit = items => items.forEach(item => {
+    all.push(item);
+    visit(children(item));
+  });
+  visit(Array.isArray(components?.models) ? components.models : Array.isArray(components) ? components : []);
+
+  const desktop = all.find(item => /^desktop$/i.test(String(value(item, 'name') || '')));
+  if (desktop) return desktop;
+  const frame = all.find(item => value(item, 'type') === 'frame' || /^frame$/i.test(String(value(item, 'name') || '')));
+  if (frame) return frame;
+  const sized = all.find(item => {
+    const current = style(item);
+    return Number.parseFloat(current.width) >= 600 && Number.parseFloat(current.height) >= 400;
+  });
+  return sized || fallback;
+}
+
+export function centeredElementPosition(parentSize, elementSize, offset = 0) {
+  const width = Math.max(1, Number(parentSize?.width) || 1400);
+  const height = Math.max(1, Number(parentSize?.height) || 1100);
+  const elementWidth = Math.max(0, Number(elementSize?.width) || 0);
+  const elementHeight = Math.max(0, Number(elementSize?.height) || 0);
+  return {
+    left: (width - elementWidth) / 2 - (Number(offset) || 0),
+    top: (height - elementHeight) / 2 - (Number(offset) || 0),
+  };
+}
+
+export function drawingBounds(start = {}, end = {}, { constrain = false, minSize = 1 } = {}) {
+  let dx = Number(end.x) - Number(start.x), dy = Number(end.y) - Number(start.y);
+  if (!Number.isFinite(dx)) dx = 0;
+  if (!Number.isFinite(dy)) dy = 0;
+  if (constrain) {
+    const side = Math.max(Math.abs(dx), Math.abs(dy));
+    dx = Math.sign(dx || 1) * side;
+    dy = Math.sign(dy || 1) * side;
+  }
+  const min = Math.max(0, Number(minSize) || 0);
+  const x = Math.min(Number(start.x) || 0, (Number(start.x) || 0) + dx);
+  const y = Math.min(Number(start.y) || 0, (Number(start.y) || 0) + dy);
+  return { x, y, width: Math.max(min, Math.abs(dx)), height: Math.max(min, Math.abs(dy)), dx, dy };
+}
+
+export function drawingPoint(event, zoom = 100) {
+  // GrapesJS scales the canvas iframe itself. Pointer client coordinates from
+  // inside that iframe are already expressed in its document's CSS pixels;
+  // dividing by the canvas zoom a second time pushes every new object away
+  // from the pointer (most visibly toward the lower-right at low zoom).
+  // Keep the parameter for callers from older Forma releases.
+  void zoom;
+  return { x: Number(event.clientX), y: Number(event.clientY) };
+}
+
+export function canvasWrapperExtent(framePosition = {}, frameSize = {}, margins = {}) {
+  const left = Number(framePosition.left) || 0;
+  const top = Number(framePosition.top) || 0;
+  const width = Math.max(0, Number(frameSize.width) || 0);
+  const height = Math.max(0, Number(frameSize.height) || 0);
+  const minWidth = Math.max(1, Number(margins.minWidth) || 1400);
+  const minHeight = Math.max(1, Number(margins.minHeight) || 1100);
+  const right = Math.max(0, Number(margins.right) || 88);
+  const bottom = Math.max(0, Number(margins.bottom) || 100);
+  return {
+    width: Math.max(minWidth, Math.ceil(left + width + right)),
+    height: Math.max(minHeight, Math.ceil(top + height + bottom)),
+  };
+}
+
+export function gradientFill(mode, start, end, angle = 135) {
+  const normalize = color => {
+    const value = String(color || '').trim();
+    if (!/^#?[\da-f]{6}$/i.test(value)) return null;
+    return value.startsWith('#') ? value : `#${value}`;
+  };
+  const from = normalize(start);
+  const to = normalize(end);
+  if (mode === 'solid') return { 'background-image': 'none' };
+  if (!from || !to || !['linear', 'radial'].includes(mode)) return null;
+  const degrees = Math.max(0, Math.min(360, Number(angle) || 0));
+  const image = mode === 'radial'
+    ? `radial-gradient(circle at center, ${from} 0%, ${to} 100%)`
+    : `linear-gradient(${degrees}deg, ${from} 0%, ${to} 100%)`;
+  return { 'background-color': 'transparent', 'background-image': image };
+}

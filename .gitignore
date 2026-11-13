@@ -1,0 +1,17 @@
+.sites-runtime/
+node_modules/
+*.tar.gz
+
+# Native Windows build outputs and restored dependencies
+desktop/bin/
+desktop/obj/
+desktop/obj-fresh/
+desktop/packages/
+desktop/runtime/
+desktop/tools/
+desktop/release/
+
+# User designs and generated recreation bundles
+GrapesJS/projects/*
+!GrapesJS/projects/.gitkeep
+GrapesJS/exports/

@@ -1,0 +1,4 @@
+const test=require('node:test');const assert=require('node:assert/strict');
+test('Forma command applies, undoes, and redoes project metadata',async()=>{const {createCommandService,setProjectSectionCommand}=await import('../dist/command-service.js');let value=[];const state={getComponents:()=>structuredClone(value),setComponents:next=>{value=structuredClone(next)}};const commands=createCommandService();commands.execute(setProjectSectionCommand(state,'components',[{id:'a'}]));assert.deepEqual(value,[{id:'a'}]);assert.equal(commands.undo(),true);assert.deepEqual(value,[]);assert.equal(commands.redo(),true);assert.deepEqual(value,[{id:'a'}]);});
+test('failed command validation creates no history entry',async()=>{const {createCommandService}=await import('../dist/command-service.js');const commands=createCommandService();assert.throws(()=>commands.execute({id:'bad',apply(){throw Error('invalid')},revert(){}}),/invalid/);assert.equal(commands.canUndo(),false);});
+
