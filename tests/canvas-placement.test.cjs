@@ -28,15 +28,15 @@ test('canvas pointer coordinates stay iframe-local without applying canvas zoom 
   assert.deepEqual(drawingPoint({ clientX: 250, clientY: 200 }, 100), { x: 250, y: 200 });
 });
 
-test('canvas wrapper expands to show every part of a tall Desktop frame', async () => {
+test('canvas wrapper matches the frame bounds without one-sided padding', async () => {
   const { canvasWrapperExtent } = await import('../dist/canvas-placement.js');
   assert.deepEqual(canvasWrapperExtent({ left: 88, top: 72 }, { width: 1440, height: 5100 }), {
-    width: 1616,
-    height: 5272,
+    width: 1528,
+    height: 5172,
   });
   assert.deepEqual(canvasWrapperExtent({ left: 0, top: 0 }, { width: 600, height: 400 }), {
-    width: 1400,
-    height: 1100,
+    width: 600,
+    height: 400,
   });
 });
 

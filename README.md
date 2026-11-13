@@ -4,13 +4,14 @@ A working visual design editor powered by **GrapesJS 0.23.6**, with locally bund
 
 ## Run
 
-From this directory, run:
+From this directory, install the project dependencies once, then start Forma:
 
 ```powershell
+npm install
 node server.mjs
 ```
 
-Open http://127.0.0.1:5173. No dependency installation or build is required. A recent Node.js version is sufficient.
+Open http://127.0.0.1:5173. A recent Node.js version is sufficient.
 
 For the native Windows application, install the Visual Studio 2022 C++ build tools and run:
 
@@ -28,6 +29,7 @@ The C++20 source and build instructions are in [`desktop`](desktop/README.md).
 - Edit dimensions, position, rotation, corner radius, fill, opacity, typography, borders, and shadows. Gradient stops can be added, removed, recolored, repositioned, and given a CSS direction; image layers and image fills expose fit and crop-position controls.
 - Align, duplicate, hide, lock, and delete layers. Expand and collapse groups; search layers.
 - Create and switch pages; double-click a page or layer name to rename it.
+- Import Figma Design `.fig` files from the File menu. Page/layer hierarchy, geometry, text, solid and gradient fills, image fills, vector paths, visibility, and common effects are translated into editable Forma layers. Auto-layout and component links are imported as their current visual arrangement; prototype connections, Figma variables, and some advanced paint/effect data are not carried over.
 - Zoom continuously from 1% to 25,600%; use cursor-anchored Ctrl/⌘+wheel, trackpad pinch, 1.5× zoom buttons, direct percentage entry, and screen-speed wheel/hand-tool panning. Shift+1 fits the page and Shift+2 fits the current selection.
 - Designs autosave in this browser. Use Export → Download project for a portable JSON backup, or Open project to import one.
 - Designs also autosave as readable JSON files in [`GrapesJS/projects`](GrapesJS/projects). Use **Projects** in the top bar to browse, search, create, open, and duplicate them.

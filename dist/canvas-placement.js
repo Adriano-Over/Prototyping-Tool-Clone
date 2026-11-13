@@ -66,18 +66,17 @@ export function drawingPoint(event, zoom = 100) {
   return { x: Number(event.clientX), y: Number(event.clientY) };
 }
 
-export function canvasWrapperExtent(framePosition = {}, frameSize = {}, margins = {}) {
+export function canvasWrapperExtent(framePosition = {}, frameSize = {}) {
   const left = Number(framePosition.left) || 0;
   const top = Number(framePosition.top) || 0;
   const width = Math.max(0, Number(frameSize.width) || 0);
   const height = Math.max(0, Number(frameSize.height) || 0);
-  const minWidth = Math.max(1, Number(margins.minWidth) || 1400);
-  const minHeight = Math.max(1, Number(margins.minHeight) || 1100);
-  const right = Math.max(0, Number(margins.right) || 88);
-  const bottom = Math.max(0, Number(margins.bottom) || 100);
+  // Keep the editor workspace aligned to the frame's actual bounds. Extra
+  // fixed right/bottom padding made the imported page look off-center and
+  // could appear as a dark strip beneath otherwise correctly sized frames.
   return {
-    width: Math.max(minWidth, Math.ceil(left + width + right)),
-    height: Math.max(minHeight, Math.ceil(top + height + bottom)),
+    width: Math.max(1, Math.ceil(left + width)),
+    height: Math.max(1, Math.ceil(top + height)),
   };
 }
 

@@ -10,5 +10,8 @@
     "desktop:build": "powershell -ExecutionPolicy Bypass -File desktop/build.ps1",
     "release": "npm run check && npm run desktop:build && node release.mjs"
   },
-  "description": "Forma desktop design editor powered by GrapesJS with a native C++ host"
+  "description": "Forma desktop design editor powered by GrapesJS with a native C++ host",
+  "dependencies": {
+    "openfig-core": "^0.4.1"
+  }
 }

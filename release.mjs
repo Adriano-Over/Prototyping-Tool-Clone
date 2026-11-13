@@ -54,6 +54,22 @@ export async function packageRelease() {
   await fs.copyFile(path.join(projectRoot,'server-assets.mjs'),path.join(staging,'server-assets.mjs'));
   await fs.copyFile(path.join(projectRoot,'render-service.mjs'),path.join(staging,'render-service.mjs'));
   await fs.copyFile(path.join(projectRoot,'workspace-service.mjs'),path.join(staging,'workspace-service.mjs'));
+  await fs.copyFile(path.join(projectRoot,'fig-import.mjs'),path.join(staging,'fig-import.mjs'));
+  await fs.mkdir(path.join(staging,'node_modules'),{recursive:true});
+  for (const dependency of ['openfig-core','fflate','fzstd','kiwi-schema']) {
+    await fs.cp(path.join(projectRoot,'node_modules',dependency),path.join(staging,'node_modules',dependency),{recursive:true});
+  }
+  await fs.writeFile(path.join(staging,'THIRD-PARTY-NOTICES.txt'),[
+    'Forma includes these MIT-licensed packages for offline Figma .fig decoding:',
+    '',
+    'openfig-core 0.4.1 — Copyright (c) rcoenen — https://github.com/OpenFig-org/openfig-core',
+    'fflate 0.8.3 — see node_modules/fflate/LICENSE',
+    'fzstd 0.1.1 — see node_modules/fzstd/LICENSE',
+    'kiwi-schema 0.5.0 — https://github.com/evanw/kiwi',
+    '',
+    'Each package is distributed under the MIT License. Copyright and permission notice:',
+    'Permission is hereby granted, free of charge, to any person obtaining a copy of the software and associated documentation files, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies, subject to including the copyright and permission notice in copies or substantial portions of the Software.',
+  ].join('\n'));
   await fs.copyFile(executable,path.join(staging,'Forma.exe'));
   for (const file of ['WebView2Loader.dll']) {
     try { await fs.copyFile(path.join(projectRoot,'desktop','bin','x64','Release',file),path.join(staging,file)); } catch {}

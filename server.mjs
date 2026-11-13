@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { createAssetService } from './server-assets.mjs';
 import { createWorkspaceService } from './workspace-service.mjs';
 import { createRenderService } from './render-service.mjs';
+import { importFigProject } from './fig-import.mjs';
 
 const root = path.resolve('dist');
 const projectsRoot = path.resolve('GrapesJS', 'projects');
@@ -190,7 +191,7 @@ const server = http.createServer(async (req, res) => {
       const readOnly=['GET','HEAD'].includes(req.method);
       if(req.headers['sec-fetch-site']&& !['same-origin','none'].includes(req.headers['sec-fetch-site'])&& !(readOnly&&req.headers['sec-fetch-dest']==='image'))return sendJson(res,403,{error:'Cross-origin requests are not allowed'});
       if(!readOnly&&req.headers['x-forma-token']!==sessionToken)return sendJson(res,403,{error:'Local session expired. Retry the operation.'});
-      if(!readOnly&&!url.pathname.match(/\/assets$/)&&String(req.headers['content-type']||'').split(';')[0]!=='application/json')return sendJson(res,415,{error:'Expected application/json'});
+      if(!readOnly&&!url.pathname.match(/\/assets$/)&&url.pathname!=='/api/import/fig'&&String(req.headers['content-type']||'').split(';')[0]!=='application/json')return sendJson(res,415,{error:'Expected application/json'});
     }
     if(url.pathname==='/api/session'&&req.method==='GET')return sendJson(res,200,{token:sessionToken});
     if(url.pathname.startsWith('/api/workspace/'))return await workspaceService.handle(req,res,url);
@@ -206,6 +207,16 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res,200,value);
     }
     if (url.pathname === '/api/projects' && req.method === 'GET') return sendJson(res, 200, { folder:projectsRoot, projects:await projectList() });
+    if (url.pathname === '/api/import/fig' && req.method === 'POST') {
+      try {
+        const bytes=await readBytes(req,200*1024*1024);
+        let filename='Imported Figma design';
+        try { filename=decodeURIComponent(String(req.headers['x-file-name']||filename)); } catch {}
+        return sendJson(res,200,importFigProject(bytes,filename));
+      } catch(error) {
+        return sendJson(res,400,{error:error.message||'This Figma file could not be imported.'});
+      }
+    }
     if (url.pathname === '/api/projects' && req.method === 'POST') {
       return await mutateProject(async()=>{
       const value = await readBody(req);
