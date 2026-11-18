@@ -2,6 +2,15 @@
 
 The supplied Figma tools guide describes a full product platform. Forma now implements a focused desktop design editor foundation and tracks the remaining platform work explicitly.
 
+## Phase 0 baseline and hygiene — 2026-11-18
+
+- The local editor and canvas now use the bundled Inter font; Google Fonts links were removed from the app, canvas, and portable preview so normal editing does not request internet resources. Authored prototype links can still open their configured destinations.
+- `npm start`, `npm test`, and `npm run lint` are available. The syntax check covers project and test JavaScript while excluding vendored GrapesJS.
+- `dist/` is the checked-in frontend source served directly by the local server; the project has no frontend bundler/build output step.
+- Repository screenshots live under `docs/screenshots/`. Local workspace account data is ignored by Git alongside designs, exports, dependencies, and native build outputs.
+- The existing Windows executable, WebView2 loader, and release archive remain on this computer but are no longer tracked as source repository files.
+- Baseline: `npm install` completed with 5 packages audited and 0 reported vulnerabilities; `npm run check` passed 126 tests before changes. After the offline-font test was added, the full suite passed 127/127 repeatedly; `npm run lint` checked 89 project and test files. The local server returned HTTP 200 for the editor and issued a session token.
+
 ## Working editor capabilities
 
 - Canvas, frames, sections, rectangles, ellipses, lines, text, images, polygons, stars, arrows, and freehand-style SVG strokes
