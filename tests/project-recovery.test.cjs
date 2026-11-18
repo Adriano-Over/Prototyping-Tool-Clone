@@ -1,11 +1,11 @@
 const test=require('node:test');const assert=require('node:assert/strict');
 const project=(revision=1)=>({format:'forma-project',schemaVersion:2,id:'saved',name:'Saved',revision,updatedAt:'2026-10-19T10:00:00Z',editor:{grapesjs:{pages:[{id:'page'}]}},forma:{components:[]},assets:[]});
 const storage=()=>{const values=new Map();return {values,getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};};
-async function setup({disk=project(),cache,fail=false,quota=false}={}){
+async function setup({disk=project(),cache,fail=false,quota=false,recovery}={}){
   const {createProjectStore}=await import('../dist/project-store.js');const saved=storage();if(cache)saved.setItem('forma-project-cache:saved',JSON.stringify(cache));
   if(quota)saved.setItem=()=>{throw Error('quota');};
   const calls=[],statuses=[];let id='saved',live=project();
-  const store=createProjectStore({storage:saved,getId:()=>id,setId:value=>{id=value;},setName:()=>{},getProject:()=>live,onStatus:value=>statuses.push(value),request:async(url,options={})=>{calls.push({url,options});if(fail)throw Error('offline');return {ok:true,json:async()=>disk};}});
+  const store=createProjectStore({storage:saved,recovery,getId:()=>id,setId:value=>{id=value;},setName:()=>{},getProject:()=>live,onStatus:value=>statuses.push(value),request:async(url,options={})=>{calls.push({url,options});if(fail)throw Error('offline');return {ok:true,json:async()=>disk};}});
   return {store,saved,calls,statuses,setLive:value=>{live=value;}};
 }
 test('missing cache reopens disk; failed recovery never saves the sample over its ID',async()=>{
@@ -19,13 +19,39 @@ test('newer matching browser edits recover; stale browser edits remain separate 
 });
 test('failed folder saves retain immediate browser recovery; quota failure is reported honestly',async()=>{
   const offline=await setup({cache:project(),fail:true});await offline.store.recoverStartup();await assert.rejects(offline.store.saveToFolder(),/offline/);assert.ok(offline.saved.getItem('forma-project-cache:saved'));assert.match(offline.statuses.at(-1),/folder save failed/);
-  const full=await setup({quota:true});assert.equal(full.store.writeSnapshot(),false);assert.match(full.statuses.at(-1),/full/);
+  const full=await setup({quota:true});assert.equal(await full.store.writeSnapshot(),false);assert.match(full.statuses.at(-1),/full/);
 });
 test('browser recovery snapshots preserve schema 3 scene and import source metadata',async()=>{
   const scene={version:1,pages:['node_a'],nodes:{node_a:{id:'node_a',children:[]}},diagnostics:[{code:'FONT_MISSING',sourceNodeId:'1:2'}]};
   const importSources=[{id:'doc_a',sha256:'abc',figVersion:101}];
   const cached={...project(),schemaVersion:3,updatedAt:'2026-10-19T11:00:00Z',forma:{components:[],scene,importSources}};
   const {store}=await setup({cache:cached});
-  const snapshot=store.readSnapshot();assert.deepEqual(snapshot.forma.scene,scene);assert.deepEqual(snapshot.forma.importSources,importSources);
+  const snapshot=await store.readSnapshot();assert.deepEqual(snapshot.forma.scene,scene);assert.deepEqual(snapshot.forma.importSources,importSources);
   const recovered=await store.recoverStartup();assert.deepEqual(recovered.forma.scene,scene);assert.deepEqual(recovered.forma.importSources,importSources);
+});
+test('oversized imports use database recovery when local storage is full',async()=>{
+  const data=new Map(),recovery={
+    put:async(key,value)=>data.set(key,structuredClone(value)),
+    get:async key=>data.get(key),
+    keys:async prefix=>[...data.keys()].filter(key=>key.startsWith(prefix)),
+  };
+  const stored={...project(),updatedAt:'2026-10-19T11:00:00Z',name:'Large imported design',assets:[{id:'large',src:'x'.repeat(6_000_000)}]};
+  const first=await setup({quota:true,recovery});
+  assert.equal(await first.store.writeSnapshot(stored),true);
+  const reopened=await setup({quota:true,recovery});
+  assert.equal((await reopened.store.recoverStartup()).name,stored.name);
+  const afterDiskEdit=await setup({quota:true,recovery,disk:project(2)});
+  assert.equal((await afterDiskEdit.store.recoverStartup()).revision,2);
+  assert.deepEqual((await afterDiskEdit.store.listRecoveryCopies()).map(copy=>copy.project.name),[stored.name]);
+});
+test('idle editor updates do not create new revisions for identical document content',async()=>{
+  const {store,calls,setLive}=await setup();
+  await store.recoverStartup();
+  await store.saveToFolder();
+  setLive({...project(),updatedAt:'2026-10-19T12:00:00Z'});
+  await store.flush();
+  assert.equal(calls.filter(({options})=>options.method==='POST').length,1);
+  setLive({...project(),name:'An edit'});
+  await store.flush();
+  assert.equal(calls.filter(({options})=>options.method==='POST').length,2);
 });

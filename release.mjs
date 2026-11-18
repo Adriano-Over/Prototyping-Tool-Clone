@@ -50,11 +50,11 @@ export async function packageRelease() {
   await fs.rm(staging,{recursive:true,force:true});
   await fs.mkdir(staging,{recursive:true});
   const hashes = await copyAndVerifyDist(path.join(projectRoot,'dist'),path.join(staging,'dist'));
-  await fs.copyFile(path.join(projectRoot,'server.mjs'),path.join(staging,'server.mjs'));
-  await fs.copyFile(path.join(projectRoot,'server-assets.mjs'),path.join(staging,'server-assets.mjs'));
-  await fs.copyFile(path.join(projectRoot,'render-service.mjs'),path.join(staging,'render-service.mjs'));
-  await fs.copyFile(path.join(projectRoot,'workspace-service.mjs'),path.join(staging,'workspace-service.mjs'));
-  await fs.copyFile(path.join(projectRoot,'fig-import.mjs'),path.join(staging,'fig-import.mjs'));
+  const serverModules = ['server.mjs','server-assets.mjs','server-fonts.mjs','render-service.mjs','workspace-service.mjs'];
+  const importModules = (await fs.readdir(projectRoot)).filter(file => /^fig-import(?:-[\w-]+)?\.mjs$/.test(file));
+  for (const file of [...serverModules, ...importModules]) {
+    await fs.copyFile(path.join(projectRoot,file),path.join(staging,file));
+  }
   await fs.mkdir(path.join(staging,'node_modules'),{recursive:true});
   for (const dependency of ['openfig-core','fflate','fzstd','kiwi-schema']) {
     await fs.cp(path.join(projectRoot,'node_modules',dependency),path.join(staging,'node_modules',dependency),{recursive:true});

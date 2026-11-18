@@ -8,8 +8,11 @@ const placement=new Set(['position','left','top','right','bottom']);
 export function snapshotComponent(node,path='root') {
   const attributes={...node.getAttributes()};delete attributes.id;delete attributes['data-component-id'];delete attributes['data-forma-node-id'];
   const key=node.get('formaPartKey')||path;
+  const vectorTemplate=node.get('formaVectorTemplate');
   return copy({type:node.get('type')||'default',tagName:node.get('tagName')||'div',name:node.get('name')||node.getName(),formaPartKey:key,
     attributes,classes:node.toJSON?.().classes||[],style:{...node.getStyle()},content:node.get('content')||'',formaBindings:copy(node.get('formaBindings')||{}),formaVariableModes:copy(node.get('formaVariableModes')||{}),
+    ...(vectorTemplate ? {formaVectorTemplate:vectorTemplate} : {}),
+    ...(node.get('layerable')===false ? Object.fromEntries(['layerable','selectable','hoverable','draggable','droppable','copyable'].map(flag=>[flag,node.get(flag)])) : {}),
     components:children(node).map((child,index)=>snapshotComponent(child,`${key}/${index}`))});
 }
 function indexTree(root){const index=new Map();const visit=node=>{index.set(node.formaPartKey,node);(node.components||[]).forEach(visit);};visit(root);return index;}
@@ -24,7 +27,7 @@ export function collectOverrides(current,baseline) {
       if(key===baseline.formaPartKey&&section==='style'&&placement.has(name))continue;
       if(!same(base[section]?.[name],node[section]?.[name])){patch[section]||={};patch[section][name]=node[section]?.[name]??null;}
     }
-    for(const field of ['content','name','formaBindings','formaVariableModes'])if(!same(node[field],base[field]))patch[field]=node[field];
+    for(const field of ['content','name','formaBindings','formaVariableModes','formaVectorTemplate'])if(!same(node[field],base[field]))patch[field]=node[field]??null;
     if(Object.keys(patch).length)result[key]=patch;
   }
   // Preserve additions inside an instance as local structure overrides.
@@ -39,7 +42,7 @@ export function applyOverrides(data,overrides={}) {
     const patch=overrides[node.formaPartKey]||{};if(patch.deleted)return null;
     const result=copy(node);
     for(const section of ['style','attributes'])for(const [key,value] of Object.entries(patch[section]||{})){if(value===null)delete result[section][key];else result[section][key]=value;}
-    for(const key of ['content','name','formaBindings','formaVariableModes'])if(key in patch)result[key]=patch[key];
+    for(const key of ['content','name','formaBindings','formaVariableModes','formaVectorTemplate'])if(key in patch)result[key]=patch[key];
     result.components=(result.components||[]).map(visit).filter(Boolean).concat(copy(patch.additions||[]));return result;
   };return visit(data);
 }
@@ -70,7 +73,7 @@ export function createComponentService(api) {
     };return visit(data,true);
   }
   function write(node,data){
-    node.set({name:data.name,type:data.type,tagName:data.tagName,content:data.content,formaPartKey:data.formaPartKey,formaBindings:data.formaBindings||{},formaVariableModes:data.formaVariableModes||{}});node.setClass(data.classes||[]);node.setAttributes(data.attributes);node.setStyle(data.style);node.components(data.components||[]);
+    node.set({name:data.name,type:data.type,tagName:data.tagName,content:data.content,formaPartKey:data.formaPartKey,formaBindings:data.formaBindings||{},formaVariableModes:data.formaVariableModes||{}});if(data.formaVectorTemplate)node.set('formaVectorTemplate',data.formaVectorTemplate);else if(node.get('formaVectorTemplate'))node.unset('formaVectorTemplate');node.setClass(data.classes||[]);node.setAttributes(data.attributes);node.setStyle(data.style);node.components(data.components||[]);
   }
   function insert(id,variant){
     const definition=find(id);if(!definition)throw Error('Component not found.');

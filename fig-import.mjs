@@ -5,6 +5,8 @@ import { buildFigResourceIndex, figResourceManifest } from './fig-import-resourc
 import { figVariablesToFormaState, normalizeFigVariables } from './fig-import-variables.mjs';
 import { figStackChildStyle, figStackStyle, normalizeFigStackLayout } from './fig-import-layout.mjs';
 import { importFigPrototypeInteractions } from './fig-import-prototype.mjs';
+import { figTextStyle } from './fig-import-text.mjs';
+import { preciseGeometryPath, preserveVectorSubpixelPosition, vectorPaintComponent } from './fig-import-vector-paint.mjs';
 import { collectOverrides } from './dist/component-service.js';
 import { cssVariableName } from './dist/variable-service.js';
 
@@ -148,11 +150,12 @@ export function paintStackCss(paints, images, imageFills = [], size = {}, variab
   };
 }
 
-function vectorPathsToSvg(paths, { width = 1, height = 1, strokeWeight = 1, strokeCap = 'NONE', strokeJoin = 'MITER', paintColor = null } = {}) {
+function vectorPathsToSvg(paths, { width = 1, height = 1, strokeWeight = 1, strokeCap = 'NONE', strokeJoin = 'MITER', paintColor = null, expandedStroke = false, strokeAlign = 'CENTER' } = {}) {
   width = Math.max(1, Number(width || 1));
   height = Math.max(1, Number(height || 1));
   const lineCap = ({ ROUND: 'round', SQUARE: 'square', NONE: 'butt' })[String(strokeCap).toUpperCase()] || 'butt';
   const lineJoin = ({ ROUND: 'round', BEVEL: 'bevel', MITER: 'miter' })[String(strokeJoin).toUpperCase()] || 'miter';
+  const pathAttributes = entry => `d="${entry.svgPath.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}" fill-rule="${entry.windingRule === 'ODD' ? 'evenodd' : 'nonzero'}"`;
   const serialize = (entry, isStroke) => {
     const paint = (entry.paints || []).find(item => item?.visible !== false);
     if (!entry.svgPath) return '';
@@ -161,9 +164,18 @@ function vectorPathsToSvg(paths, { width = 1, height = 1, strokeWeight = 1, stro
     const opacity = Number(paint?.opacity ?? 1);
     const fill = isStroke ? 'none' : resolvedColor;
     const stroke = isStroke ? resolvedColor : 'none';
-    return `<path d="${entry.svgPath.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"${isStroke ? ` stroke-opacity="${opacity}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}"` : ` fill-opacity="${opacity}"`}/>`;
+    return `<path ${pathAttributes(entry)} fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"${isStroke ? ` stroke-opacity="${opacity}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}"` : ` fill-opacity="${opacity}"`}/>`;
   };
-  const body = [...(paths.fill || []).map(entry => serialize(entry, false)), ...(paths.stroke || []).map(entry => serialize(entry, true))].join('');
+  const fills = (paths.fill || []).filter(entry => entry.svgPath);
+  const fill = fills.map(entry => serialize(entry, false)).join('');
+  let stroke = (paths.stroke || []).map(entry => serialize(entry, !expandedStroke)).join('');
+  if (stroke && expandedStroke && fills.length && ['INSIDE', 'OUTSIDE'].includes(strokeAlign)) {
+    const inside = strokeAlign === 'INSIDE';
+    const silhouette = fills.map(entry => `<path ${pathAttributes(entry)} fill="${inside ? 'white' : 'black'}"/>`).join('');
+    const base = inside ? '' : `<rect width="${width}" height="${height}" fill="white"/>`;
+    stroke = `<defs><mask id="stroke-alignment" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}">${base}${silhouette}</mask></defs><g mask="url(#stroke-alignment)">${stroke}</g>`;
+  }
+  const body = fill + stroke;
   if (!body) return null;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${body}</svg>`;
 }
@@ -175,14 +187,19 @@ export function vectorPathsToDataUrl(paths, options = {}) {
   return svg ? svgDataUrl(svg) : null;
 }
 
-function svgForVector(doc, node, variableIdByAssetRef) {
-  const paths = resolveVectorNodePaths(doc, node);
+function svgForVector(paths, node, variableIdByAssetRef) {
+  const isBoolean = node.type === 'BOOLEAN_OPERATION';
+  if (isBoolean && [...paths.fill, ...paths.stroke].some(entry =>
+    entry.paints?.some(paint => paint.visible !== false && paint.type !== 'SOLID'))) return null;
   const options = {
     width: node.size?.x,
     height: node.size?.y,
     strokeWeight: node.strokeWeight,
     strokeCap: node.strokeCap,
     strokeJoin: node.strokeJoin,
+    strokeAlign: node.strokeAlign,
+    // Figma stores these paths as already expanded stroke outlines.
+    expandedStroke: true,
   };
   const fallbackSvg = vectorPathsToSvg(paths, options);
   const variables = [];
@@ -202,6 +219,36 @@ function svgForVector(doc, node, variableIdByAssetRef) {
     },
   });
   return fallbackSvg ? { dataUrl: svgDataUrl(fallbackSvg), template: variables.length ? { svg, variables } : null } : null;
+}
+
+function inlineBooleanPaint(paths, node, key, style, colorForPaint) {
+  const path = paths.fill[0];
+  const paints = path?.paints?.filter(paint => paint?.visible !== false) || [];
+  if (paths.fill.length !== 1 || paths.stroke.length || paints.length !== 1 ||
+      paints[0]?.type !== 'SOLID' || !paints[0].color || !(node.size?.x > 0 && node.size?.y > 0)) return null;
+  const d = preciseGeometryPath(path.commandsBlob);
+  if (!d) return null;
+  const paint = paints[0];
+  style['--forma-vector-fill'] = colorForPaint(paint, colorWithOpacity(paint.color, paint.opacity), paint.opacity);
+  return vectorPaintComponent(key, 'path', { d, 'fill-rule': path.windingRule === 'ODD' ? 'evenodd' : 'nonzero' }, { fill: 'var(--forma-vector-fill)' }, `0 0 ${node.size.x} ${node.size.y}`);
+}
+
+function inlineCenteredStroke(node, strokePaints, key) {
+  if (!['RECTANGLE', 'ROUNDED_RECTANGLE', 'ELLIPSE'].includes(node.type) ||
+      strokePaints.length !== 1 || strokePaints[0].type !== 'SOLID' ||
+      !node.strokeGeometry?.length || !(node.size?.x > 0 && node.size?.y > 0) ||
+      node.rectangleCornerRadiiIndependent || node.cornerSmoothing > 0 || node.dashPattern?.length ||
+      node.fillPaints?.some(paint => paint?.visible !== false && Number(paint.opacity ?? 1) > 0)) return null;
+  const arc = node.arcData;
+  if (arc && (Math.abs(arc.startingAngle || 0) > 1e-6 || Math.abs((arc.endingAngle ?? 2 * Math.PI) - 2 * Math.PI) > 1e-6 || arc.innerRadius > 0)) return null;
+  const ellipse = node.type === 'ELLIPSE';
+  const attributes = ellipse ? { cx: '50%', cy: '50%', rx: '50%', ry: '50%' } : { width: '100%', height: '100%' };
+  const style = { fill: 'none', stroke: 'var(--forma-vector-stroke-color)', 'stroke-width': 'var(--forma-vector-stroke-width)' };
+  if (!ellipse) {
+    style.rx = 'var(--forma-vector-stroke-radius, 0px)';
+    style['stroke-linejoin'] = ({ BEVEL: 'bevel', ROUND: 'round' })[node.strokeJoin] || 'miter';
+  }
+  return vectorPaintComponent(key, ellipse ? 'ellipse' : 'rect', attributes, style);
 }
 
 export function importFigProject(bytes, filename = 'Imported Figma design') {
@@ -245,6 +292,7 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
   };
   const nativeLayoutMetadata = {};
   const importedBaseStyles = new WeakMap();
+  const vectorPaintByComponent = new WeakMap();
   const importedVariables = normalizeFigVariables(resourceIndex, sourceBundle.documentId);
   scene.resources.collections = importedVariables.collections;
   scene.resources.variables = importedVariables.variables;
@@ -433,7 +481,12 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     }
     if (['FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL'].includes(type) && node.frameMaskDisabled !== true) style.overflow = 'hidden';
     const radius = node.cornerRadius ?? node.rectangleTopLeftCornerRadius;
-    if (Number.isFinite(radius) && radius > 0) style['border-radius'] = `${radius}px`;
+    if (type === 'ELLIPSE') style['border-radius'] = '50%';
+    else if (node.rectangleCornerRadiiIndependent === true) {
+      // CSS order is clockwise, starting from the top left.
+      const corners = [node.rectangleTopLeftCornerRadius, node.rectangleTopRightCornerRadius, node.rectangleBottomRightCornerRadius, node.rectangleBottomLeftCornerRadius];
+      style['border-radius'] = corners.map(value => `${Math.max(0, Number(value ?? radius) || 0)}px`).join(' ');
+    } else if (Number.isFinite(radius) && radius > 0) style['border-radius'] = `${radius}px`;
 
     const imageFills = [];
     const hasImageFill = type !== 'TEXT' && (node.fillPaints || []).some(paint => paint?.type === 'IMAGE' && paint.visible !== false);
@@ -450,11 +503,24 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     if (fill?.opacity < 1) style['background-blend-mode'] = 'normal';
     const shadows = (node.effects || []).filter(effect => effect?.visible !== false && ['DROP_SHADOW', 'INNER_SHADOW'].includes(effect.type)).map(effect => `${effect.type === 'INNER_SHADOW' ? 'inset ' : ''}${Number(effect.offset?.x || 0)}px ${Number(effect.offset?.y || 0)}px ${Math.max(0, Number(effect.radius || 0))}px ${Number(effect.spread || 0)}px ${colorCss(effect.color) || 'rgba(0,0,0,.25)'}`);
     const strokePaints = (node.strokePaints || []).filter(paint => paint?.visible !== false && Number(paint?.opacity ?? 1) > 0);
-    const stroke = type === 'VECTOR' ? null : paintCss(strokePaints, images, [], resolvePaintVariable);
+    const stroke = ['VECTOR', 'BOOLEAN_OPERATION'].includes(type) ? null : paintCss(strokePaints, images, [], resolvePaintVariable);
+    let vectorPaint = null;
+    let paintOutset = 0;
     if (stroke?.color && Number(node.strokeWeight) > 0) {
       const weight = Math.max(0, Number(node.strokeWeight));
       const align = String(node.strokeAlign || 'CENTER').toUpperCase();
-      if (align === 'CENTER') style.border = `${weight}px solid ${stroke.color}`;
+      if (align === 'CENTER') {
+        vectorPaint = inlineCenteredStroke(node, strokePaints, component.formaPartKey);
+        if (vectorPaint) {
+          style['--forma-vector-stroke-color'] = stroke.color;
+          style['--forma-vector-stroke-width'] = `${weight}px`;
+          style['--forma-vector-stroke-radius'] = `${Math.max(0, Number(radius) || 0)}px`;
+          paintOutset = weight / 2;
+        } else if (['RECTANGLE', 'ROUNDED_RECTANGLE', 'ELLIPSE'].includes(type) && node.strokeGeometry?.length) {
+          style.outline = `${weight}px solid ${stroke.color}`;
+          style['outline-offset'] = `${-weight / 2}px`;
+        } else style.border = `${weight}px solid ${stroke.color}`;
+      }
       else {
         const inset = align === 'INSIDE' ? 'inset ' : '';
         shadows.unshift(`${inset}0 0 0 ${weight}px ${stroke.color}`);
@@ -467,30 +533,36 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     if (backgroundBlur) style['backdrop-filter'] = `blur(${Math.max(0, Number(backgroundBlur.radius || 0))}px)`;
     if (type === 'TEXT') {
       component.content = String(node.textData?.characters || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-      style['font-size'] = `${Math.max(1, Number(node.fontSize || 14))}px`;
-      if (node.fontName?.family) style['font-family'] = `"${String(node.fontName.family).replaceAll('"', '')}", sans-serif`;
-      if (node.fontName?.style) {
-        const styleName = String(node.fontName.style).toLowerCase();
-        if (styleName.includes('bold') || styleName.includes('semibold')) style['font-weight'] = styleName.includes('semi') ? '600' : '700';
-        if (styleName.includes('italic')) style['font-style'] = 'italic';
-      }
-      if (node.textAlignHorizontal) style['text-align'] = String(node.textAlignHorizontal).toLowerCase();
-      if (node.lineHeight?.units === 'PIXELS' && node.lineHeight.value > 0) style['line-height'] = `${node.lineHeight.value}px`;
-      else if (node.lineHeight?.value > 0 && node.lineHeight.value < 4) style['line-height'] = String(node.lineHeight.value);
-      if (node.textTracking) style['letter-spacing'] = `${Number(node.textTracking) * 100}%`;
+      Object.assign(style, figTextStyle(node));
     }
-    if (type === 'VECTOR') {
-      const vector = svgForVector(doc, node, variableIdByAssetRef);
+    let resolvedBoolean = false;
+    if (type === 'VECTOR' || type === 'BOOLEAN_OPERATION') {
+      const paths = resolveVectorNodePaths(doc, node);
+      if (type === 'BOOLEAN_OPERATION') vectorPaint = inlineBooleanPaint(paths, node, component.formaPartKey, style, resolvePaintVariable);
+      const vector = vectorPaint ? null : svgForVector(paths, node, variableIdByAssetRef);
       if (scene.nodes[formaNodeId].paintBindings.some(binding => !binding.variableId)) addDiagnostic({ severity: 'warning', code: 'VARIABLE_VECTOR_PAINT_UNRESOLVED', sourceNodeId: id, propertyPath: 'vectorData.vectorNetworkBlob.paints', reason: 'A vector paint points to a variable that is not available to the current project.', fallback: 'The authored source color remains rendered and the full paint reference remains in scene metadata.' });
-      if (vector) {
-        component.type = 'image';
-        component.attributes.src = vector.dataUrl;
-        component.attributes.alt = node.name || 'Vector';
-        if (vector.template) component.formaVectorTemplate = vector.template;
-        delete component.content;
+      if (vector || vectorPaint) {
         delete style['background-color'];
         delete style['background-image'];
         delete style['color'];
+        if (type === 'BOOLEAN_OPERATION') {
+          resolvedBoolean = true;
+          if (vector) {
+            style['background-image'] = `url("${vector.dataUrl}")`;
+            style['background-size'] = '100% 100%';
+            style['background-repeat'] = 'no-repeat';
+            if (vector.template) component.formaVectorTemplate = { ...vector.template, target: 'background-image' };
+          }
+        } else {
+          component.type = 'image';
+          component.attributes.src = vector.dataUrl;
+          component.attributes.alt = node.name || 'Vector';
+          if (vector.template) component.formaVectorTemplate = vector.template;
+        }
+      } else if (type === 'BOOLEAN_OPERATION') {
+        delete style['background-color'];
+        delete style['background-image'];
+        addDiagnostic({ severity: 'warning', code: 'BOOLEAN_GEOMETRY_UNSUPPORTED', sourceNodeId: id, propertyPath: 'fillGeometry', reason: 'The saved Boolean result has no usable solid-paint path.', fallback: 'The original operands are retained without synthesizing a rectangular result.' });
       }
     }
     if (imageFills.some(item => item.dataUrl)) {
@@ -500,9 +572,29 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     if (stackLayout) Object.assign(style, figStackStyle(stackLayout));
     importedBaseStyles.set(component, { ...style });
     if (context.parentStackLayout) Object.assign(style, figStackChildStyle(node, context.parentStackLayout));
+    if (type === 'LINE' && style.position === 'relative' && stroke?.color && Number(node.strokeWeight) > 0 && node.size?.x > 0 && node.size?.y === 0 &&
+        Math.abs(Number(transform.m00)) < 1e-6 && Math.abs(Number(transform.m11)) < 1e-6 &&
+        Math.abs(Number(transform.m10) - 1) < 1e-6 && Math.abs(Number(transform.m01) + 1) < 1e-6) {
+      // A quarter-turn divider occupies zero width in the Figma stack.
+      const weight = Number(node.strokeWeight);
+      delete style.transform;
+      delete style['transform-origin'];
+      delete style.border;
+      style.width = `${weight}px`;
+      style.height = `${node.size.x}px`;
+      style['margin-right'] = `${-weight}px`;
+      style['background-color'] = stroke.color;
+      if (!shadows.length || (stroke && shadows.length === 1 && !node.effects?.length)) delete style['box-shadow'];
+    }
     component.style = style;
     const explicitChildren = (resourceIndex.childrenByParent.get(id) || []).filter(child => child.phase !== 'REMOVED');
     let children = explicitChildren.map(child => makeNode(child, id, { x: 0, y: 0 }, { ...context, parentStackLayout: stackLayout, sourcePath: currentSourcePath, overridePath: currentOverridePath, partPath: [...partPath, id], parentFormaNodeId: formaNodeId })).filter(Boolean);
+    if (resolvedBoolean) {
+      for (const operand of children) {
+        operand.attributes['data-forma-boolean-operand'] = 'true';
+        operand.style.display = 'none';
+      }
+    }
     if (type === 'INSTANCE' && !explicitChildren.length && node.symbolData?.symbolID) {
       const originalMasterId = guidRefId(node.symbolData.symbolID);
       const masterId = guidRefId(node.overriddenSymbolID) || originalMasterId;
@@ -538,8 +630,15 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
           const instanceHeight = Number(node.size?.y || masterHeight);
           const scaleX = masterWidth > 0 ? instanceWidth / masterWidth : 1;
           const scaleY = masterHeight > 0 ? instanceHeight / masterHeight : 1;
+          // The master is positioned out of flow, so a hugging outer instance
+          // cannot use it to determine its intrinsic size in CSS.
+          if (style.width === 'max-content' && instanceWidth > 0) style.width = `${instanceWidth}px`;
+          if (style.height === 'max-content' && instanceHeight > 0) style.height = `${instanceHeight}px`;
           expandedMaster.style.left = '0px';
           expandedMaster.style.top = '0px';
+          for (const property of ['background-color', 'background-image', 'box-shadow']) {
+            if (style[property] && style[property] === expandedMaster.style[property]) delete expandedMaster.style[property];
+          }
           if (Math.abs(scaleX - 1) > 0.0001 || Math.abs(scaleY - 1) > 0.0001) {
             const masterTransform = master.transform || {};
             expandedMaster.style.transform = cssLinearMatrix(masterTransform, scaleX, scaleY);
@@ -553,7 +652,22 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
         addDiagnostic({ severity: 'warning', code: 'COMPONENT_CYCLE', sourceNodeId: id, propertyPath: 'symbolData.symbolID', reason: `Expanding the source would re-enter component ${masterId}.`, fallback: 'Expansion stops at this instance to prevent an infinite loop.' });
       }
     }
-    if (children.length) component.components = children;
+    const visibleChildren = children.filter(child => child.style.display !== 'none');
+    if (vectorPaint || visibleChildren.some(child => vectorPaintByComponent.has(child))) {
+      preserveVectorSubpixelPosition(style, x, y);
+    }
+    if (style.overflow === 'hidden' && !stackLayout && !fill && !hasImageFill && !stroke &&
+        visibleChildren.length && visibleChildren.every(child => vectorPaintByComponent.has(child))) {
+      const outset = Math.max(...visibleChildren.map(child => vectorPaintByComponent.get(child)));
+      if (outset > 0) {
+        // Centered strokes extend around an icon's geometry. Allow the painted
+        // edge while keeping content farther outside this frame clipped.
+        style.overflow = 'clip';
+        style['overflow-clip-margin'] = `${Math.ceil(outset)}px`;
+      }
+    }
+    if (vectorPaint) vectorPaintByComponent.set(component, paintOutset);
+    if (children.length || vectorPaint) component.components = vectorPaint ? [vectorPaint, ...children] : children;
     scene.nodes[formaNodeId].children = children.map(child => child.formaNodeId).filter(Boolean);
     if (stackLayout) {
       nativeLayoutMetadata[formaNodeId] = {
@@ -576,10 +690,12 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     formaPartKey: component.formaPartKey,
     attributes: Object.fromEntries(Object.entries(component.attributes || {}).filter(([key]) => key !== 'id' && key !== 'data-forma-instance-source')),
     classes: [],
+    ...(component.layerable === false ? { layerable: false, selectable: false, hoverable: false, draggable: false, droppable: false, copyable: false } : {}),
     style: { ...(component.style || {}) },
     content: component.content || '',
     formaBindings: {},
-    formaVariableModes: {},
+    formaVariableModes: { ...(component.formaVariableModes || {}) },
+    ...(component.formaVectorTemplate ? { formaVectorTemplate: component.formaVectorTemplate } : {}),
     components: (component.components || []).map(toComponentData),
   });
   const nativeComponentDefinitionsBySource = new Map();

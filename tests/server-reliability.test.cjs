@@ -5,6 +5,11 @@ const crypto=require('node:crypto');
 
 test('portable assets, revision conflicts and local API boundaries',async t=>{
   const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'forma-reliability-'));
+  const vendor=path.join(temporary,'dist','vendor');
+  await fs.mkdir(vendor,{recursive:true});
+  for(const file of ['inter.css','Inter-Variable.ttf','Oswald-Variable.ttf','LICENSE.Oswald.txt']){
+    await fs.copyFile(path.resolve(__dirname,'../dist/vendor',file),path.join(vendor,file));
+  }
   const reservation=net.createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
   const child=spawn(process.execPath,[path.resolve(__dirname,'../server.mjs'),String(port)],{cwd:temporary,stdio:['ignore','pipe','pipe'],windowsHide:true});
   t.after(async()=>{if(child.exitCode===null){const stopped=once(child,'exit');child.kill();await stopped;}assert.equal(path.dirname(temporary),os.tmpdir());assert.ok(path.basename(temporary).startsWith('forma-reliability-'));await fs.rm(temporary,{recursive:true,force:true});});
@@ -29,10 +34,17 @@ test('portable assets, revision conflicts and local API boundaries',async t=>{
   const version=await json('/api/projects/source/versions',{name:'Scene snapshot',project});assert.equal(version.schemaVersion,3);const versionProject=await (await fetch(base+`/api/projects/source/versions/${version.id}`)).json();assert.deepEqual(versionProject.forma.scene,scene);assert.deepEqual(versionProject.forma.importSources,importSources);
   const stale=await request('/api/projects',{method:'POST',body:JSON.stringify({...project,baseRevision:first.revision})});assert.equal(stale.status,409);assert.equal((await (await fetch(base+'/api/projects/source')).json()).revision,saved.revision);
   const concurrent=await Promise.all([1,2].map(()=>request('/api/projects',{method:'POST',body:JSON.stringify({...project,baseRevision:saved.revision})})));assert.deepEqual(concurrent.map(response=>response.status).sort(),[200,409]);
-  const bundle=await json('/api/exports',{id:'bundle',name:'Bundle',project:project.editor.grapesjs,workbench:project.forma,html:`<img src="${src}">`,css:`.image{background-image:url('${src}')}`});
+  const bundle=await json('/api/exports',{id:'bundle',name:'Bundle',project:project.editor.grapesjs,workbench:project.forma,html:`<img src="${src}">`,css:`.image{background-image:url('${src}');font-family:Oswald}`});
   const folder=path.join(temporary,'GrapesJS/exports',bundle.id),html=await fs.readFile(path.join(folder,'preview.html'),'utf8'),index=JSON.parse(await fs.readFile(path.join(folder,'assets/index.json'),'utf8'));
-  assert.equal(index.length,1);assert.equal(html.includes('/api/projects/'),false);assert.ok(html.includes('assets/'+index[0].file));assert.deepEqual(await fs.readFile(path.join(folder,'assets',index[0].file)),png);
+  assert.equal(index.length,3);assert.equal(html.includes('/api/projects/'),false);assert.ok(html.includes('assets/'+index[0].file));assert.deepEqual(await fs.readFile(path.join(folder,'assets',index[0].file)),png);
+  assert.match(html,/assets\/fonts\/Oswald-Variable\.ttf/);
+  assert.match(await fs.readFile(path.join(folder,'assets/fonts/LICENSE.Oswald.txt'),'utf8'),/SIL OPEN FONT LICENSE/);
+  assert.deepEqual(await fs.readFile(path.join(folder,'assets/fonts/Oswald-Variable.ttf')),await fs.readFile(path.join(vendor,'Oswald-Variable.ttf')));
   const standalone=await json('/api/portable',{id:'source',html:`<img src="${src}">`});assert.ok(standalone.html.includes('data:image/png;base64,'));
+  const withFonts=await json('/api/portable',{id:'source',html:'<link rel="stylesheet" href="/vendor/inter.css"><p style="font-family:Oswald">Title</p>'});
+  assert.match(withFonts.html,/font-family: 'Oswald'/);
+  assert.equal([...withFonts.html.matchAll(/data:font\/ttf;base64,/g)].length,2);
+  assert.doesNotMatch(withFonts.html,/\/vendor\/inter\.css/);
   assert.equal((await request('/api/projects/source',{method:'DELETE'})).status,200);
   const imported=await json('/api/projects',{...backup,id:'',name:'Imported after source removal'});assert.equal((await fetch(base+`/api/projects/${imported.id}/assets/${asset.id}`)).status,200);
   const loaded=await (await fetch(base+'/api/projects/'+imported.id)).json();assert.equal(loaded.forma.comments.node[0].text,'Keep me');assert.ok(loaded.forma.components[0].data.attributes.src.includes(imported.id));assert.deepEqual(loaded.forma.scene,scene);assert.deepEqual(loaded.forma.importSources,importSources);

@@ -57,18 +57,30 @@ export function figStackChildStyle(node, parentLayout) {
   if (['ABSOLUTE', 'ABSOLUTE_POSITION'].includes(positioning)) return {};
   const style = { position: 'relative', left: 'auto', top: 'auto', right: 'auto', bottom: 'auto' };
   const self = align(node?.stackChildAlignSelf);
-  if (self) style['align-self'] = self;
-  const primary = sizing(node?.stackPrimarySizing);
-  const counter = sizing(node?.stackCounterSizing);
+  if (self && self !== 'stretch') style['align-self'] = self;
+  const ownLayout = normalizeFigStackLayout(node);
+  const primary = ownLayout ? null : sizing(node?.stackPrimarySizing);
+  const counter = ownLayout ? null : sizing(node?.stackCounterSizing);
   const primaryAxis = parentLayout.direction === 'row' ? 'width' : 'height';
   const counterAxis = primaryAxis === 'width' ? 'height' : 'width';
-  for (const [axis, mode] of [[primaryAxis, primary], [counterAxis, counter]]) {
-    if (mode === 'fill') {
-      style[axis] = 'auto';
-      style['flex-grow'] = '1';
-      style['flex-basis'] = '0px';
-      style[`min-${axis}`] = '0px';
-    } else if (mode === 'hug') style[axis] = 'max-content';
-  }
+  const crossPadding = counterAxis === 'width'
+    ? (parentLayout.paddingLeft || 0) + (parentLayout.paddingRight || 0)
+    : (parentLayout.paddingTop || 0) + (parentLayout.paddingBottom || 0);
+  const crossSize = node?.size?.[counterAxis === 'width' ? 'x' : 'y'];
+  const availableCross = parentLayout[counterAxis] - crossPadding;
+  // Nested stacks can carry a legacy STRETCH flag even when their saved
+  // bounds are smaller than their parent (for example a centered variant).
+  const stretch = self === 'stretch' && (!ownLayout || !Number.isFinite(availableCross) ||
+    !Number.isFinite(crossSize) || Math.abs(crossSize - availableCross) < 0.01);
+  if (primary === 'fill') {
+    style[primaryAxis] = 'auto';
+    style['flex-grow'] = '1';
+    style['flex-basis'] = '0px';
+    style[`min-${primaryAxis}`] = '0px';
+  } else if (primary === 'hug') style[primaryAxis] = 'max-content';
+  if (stretch || counter === 'fill') {
+    style[counterAxis] = 'auto';
+    style['align-self'] = 'stretch';
+  } else if (counter === 'hug') style[counterAxis] = 'max-content';
   return style;
 }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {spawn} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
+import { embeddedFontCss, readBundledDesignFonts } from './server-fonts.mjs';
 const escape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
 const CSP="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'none'; base-uri 'none'; form-action 'none'";
 export async function findRenderBrowser(){
@@ -30,8 +31,8 @@ export function createRenderService({assetService,root,zipFiles}){
   async function produce(request){
     const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'forma-render-'));
     try{
-      const font=await fs.readFile(path.join(root,'vendor','Inter-Variable.ttf'));
-      const fontCss=`@font-face{font-family:Inter;src:url(data:font/ttf;base64,${font.toString('base64')}) format('truetype');font-weight:100 900;font-style:normal}*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}html,body{margin:0;padding:0;background:${request.transparent?'transparent':'#ffffff'};overflow:hidden}`;
+      const fonts = await readBundledDesignFonts(root, request.documents.map(({ html }) => html).join('\n'));
+      const fontCss=`${embeddedFontCss(fonts)}*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}html,body{margin:0;padding:0;background:${request.transparent?'transparent':'#ffffff'};overflow:hidden}`;
       const documents=[];for(const document of request.documents){const value=await assetService.portable({html:document.html,id:request.projectId});if(/(?:src=["']https?:|url\(["']?https?:)/i.test(value.html))throw Error('Import linked external images into the project before exporting.');documents.push({...document,html:value.html});}
       if(request.format==='svg'){
         const files=documents.map((document,index)=>({name:`${index+1}-${String(document.name||'frame').replace(/[^a-z0-9_-]+/gi,'-')}.svg`,data:Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${document.width}" height="${document.height}" viewBox="0 0 ${document.width} ${document.height}"><title>${escape(document.name||'Design')}</title><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml"><style>${fontCss}</style>${document.html}</div></foreignObject></svg>`)}));

@@ -42,8 +42,14 @@ export function createVariableService(api){
         if(vectorTemplate?.svg&&Array.isArray(vectorTemplate.variables)){
           let svg=vectorTemplate.svg;
           for(const binding of vectorTemplate.variables){const token=String(binding.token||'');if(!token)continue;const value=resolveVariable(state,binding.id,modes);svg=svg.replaceAll(token,xmlAttribute(value));}
-          const src=svgDataUrl(svg),attributes=node.getAttributes?.()||{};
-          if(attributes.src!==src){if(node.addAttributes)node.addAttributes({src});else if(node.setAttributes)node.setAttributes({...attributes,src});}
+          const src=svgDataUrl(svg);
+          if(vectorTemplate.target==='background-image'){
+            const image=`url("${src}")`;
+            if(node.getStyle()['background-image']!==image)node.addStyle({'background-image':image});
+          }else{
+            const attributes=node.getAttributes?.()||{};
+            if(attributes.src!==src){if(node.addAttributes)node.addAttributes({src});else if(node.setAttributes)node.setAttributes({...attributes,src});}
+          }
         }
         if(Object.keys(node.get('formaVariableModes')||{}).length){const local=Object.fromEntries(names.map(name=>[cssVariableName(name),String(resolveVariable(state,name,modes))]));const style=node.getStyle();if(Object.entries(local).some(([key,value])=>style[key]!==value))node.addStyle(local);}
         for(const [property,name] of Object.entries(bindings)){

@@ -67,6 +67,15 @@ export function calculateFitZoom(viewport, frame, gap = 32) {
   return Math.max(MIN_ZOOM, Math.min(MAX_FIT_ZOOM, ratio * 100));
 }
 
+export function canvasRectToViewport(rect, iframe, scale) {
+  return {left:iframe.left+rect.left*scale,top:iframe.top+rect.top*scale,width:rect.width*scale,height:rect.height*scale};
+}
+
+function fitViewport(rect, dock) {
+  if(!dock?.width||!dock.height||dock.top<=rect.top+rect.height/2||dock.top>=rect.top+rect.height)return rect;
+  return {left:rect.left,top:rect.top,width:rect.width,height:dock.top-rect.top};
+}
+
 export function createZoomController({ editor, panel, canvas, readout, getFrame, getFrameSize }) {
   let value = Number(editor.Canvas.getZoom?.()) || 75;
   let mode = 'fit';
@@ -84,22 +93,28 @@ export function createZoomController({ editor, panel, canvas, readout, getFrame,
   };
   const nextFrame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
   const getCanvasFrame=()=>editor.Canvas.getFrameEl?.()||canvas?.querySelector?.('iframe');
-  const activeFrameBounds=()=>{
-    const target=getFrame?.(),targetBox=target?.getBoundingClientRect?.(),iframe=getCanvasFrame(),iframeBox=iframe?.getBoundingClientRect?.();
+  const viewportBounds=target=>{
+    const targetBox=target?.getBoundingClientRect?.(),iframe=getCanvasFrame(),iframeBox=iframe?.getBoundingClientRect?.();
     if(!targetBox)return iframeBox;
     if(!iframeBox||target.ownerDocument!==iframe?.contentDocument)return targetBox;
     const scale=(Number(editor.Canvas.getZoom?.())||value)/100;
-    return {left:iframeBox.left+targetBox.left*scale,top:iframeBox.top+targetBox.top*scale,width:targetBox.width*scale,height:targetBox.height*scale,right:iframeBox.left+(targetBox.left+targetBox.width)*scale,bottom:iframeBox.top+(targetBox.top+targetBox.height)*scale};
+    return canvasRectToViewport(targetBox,iframeBox,scale);
   };
+  const activeFrameBounds=()=>viewportBounds(getFrame?.());
   const viewportSize=()=>({width:canvas?.clientWidth||0,height:canvas?.clientHeight||0});
+  const fitBounds=()=>{
+    const rect=canvas?.getBoundingClientRect?.();
+    return rect?fitViewport(rect,panel?.querySelector?.('.tool-dock')?.getBoundingClientRect()):null;
+  };
+  const centerBounds=()=>mode==='fit'?fitBounds():canvas?.getBoundingClientRect?.();
   let lastViewportSize=viewportSize();
   const centerActiveFrame = () => {
-    const viewport=canvas?.getBoundingClientRect?.(),frame=activeFrameBounds();if(!viewport||!frame)return {x:0,y:0,distance:0};
+    const viewport=centerBounds(),frame=activeFrameBounds();if(!viewport||!frame)return {x:0,y:0,distance:0};
     const delta=calculateCenterDelta(viewport,frame),coords=calculateCenteredCoords(editor.Canvas.getCoords?.(),viewport,frame);
     if(Math.abs(delta.x)>.5||Math.abs(delta.y)>.5)editor.Canvas.setCoords(coords.x,coords.y);
     return {...delta,distance:Math.hypot(delta.x,delta.y)};
   };
-  const getCenterErrorPx=()=>{const viewport=canvas?.getBoundingClientRect?.(),frame=activeFrameBounds();if(!viewport||!frame)return{x:0,y:0,distance:0};const delta=calculateCenterDelta(viewport,frame);return{...delta,distance:Math.hypot(delta.x,delta.y)};};
+  const getCenterErrorPx=()=>{const viewport=centerBounds(),frame=activeFrameBounds();if(!viewport||!frame)return{x:0,y:0,distance:0};const delta=calculateCenterDelta(viewport,frame);return{...delta,distance:Math.hypot(delta.x,delta.y)};};
   const settleCenter=async()=>{await nextFrame();centerActiveFrame();await nextFrame();const error=getCenterErrorPx();if(error.distance>1){centerActiveFrame();console.debug('Forma zoom center correction',error);}updateReadout();return value;};
   const setZoom = (next, { manual = true } = {}) => {
     if (manual) mode = 'manual';
@@ -116,10 +131,10 @@ export function createZoomController({ editor, panel, canvas, readout, getFrame,
   const fit = () => {
     mode = 'fit';
     const element = getFrame?.();
-    const canvasBox = canvas?.getBoundingClientRect();
+    const canvasBox = fitBounds();
     const frameBox = element?.getBoundingClientRect();
     if (!canvasBox || !frameBox) return;
-    const viewport = { width: canvas.clientWidth || canvasBox.width, height: canvas.clientHeight || canvasBox.height };
+    const viewport = { width: canvasBox.width, height: canvasBox.height };
     const measured = getFrameSize?.(element);
     const size = {
       width: Number(measured?.width) || frameBox.width,
@@ -137,12 +152,21 @@ export function createZoomController({ editor, panel, canvas, readout, getFrame,
     settleCenter();
   };
   const fitSelection = getSelection => {
-    const selection=typeof getSelection==='function'?getSelection():null,element=selection?.view?.el,box=element?.getBoundingClientRect?.(),view=canvas?.getBoundingClientRect?.();
-    if(!box||!view)return false;
-    const factor=value/100,available={width:canvas.clientWidth||view.width,height:canvas.clientHeight||view.height};
+    const selection=typeof getSelection==='function'?getSelection():null,element=selection?.view?.el,view=fitBounds();
+    if(!element||!view)return false;
+    const box=viewportBounds(element);
+    if(!box?.width||!box.height)return false;
+    const factor=value/100,available={width:view.width,height:view.height};
     const target=calculateFitZoom(available,{width:box.width/factor,height:box.height/factor},36);
     mode='manual';editor.Canvas.setZoom(target);value=target;updateReadout();
-    requestAnimationFrame(()=>{const next=element.getBoundingClientRect(),coords=editor.Canvas.getCoords?.()||{x:0,y:0};editor.Canvas.setCoords(coords.x+(view.left+view.width/2)-(next.left+next.width/2),coords.y+(view.top+view.height/2)-(next.top+next.height/2));updateReadout();});
+    requestAnimationFrame(()=>{
+      const next=viewportBounds(element),liveView=fitBounds();
+      if(next&&liveView){
+        const coords=calculateCenteredCoords(editor.Canvas.getCoords?.(),liveView,next);
+        editor.Canvas.setCoords(coords.x,coords.y);
+      }
+      updateReadout();
+    });
     return true;
   };
   const refitIfNeeded = () => {

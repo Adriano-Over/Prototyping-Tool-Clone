@@ -7,12 +7,14 @@ import { createAssetService } from './server-assets.mjs';
 import { createWorkspaceService } from './workspace-service.mjs';
 import { createRenderService } from './render-service.mjs';
 import { importFigProject } from './fig-import.mjs';
+import { embeddedFontCss, readBundledDesignFonts } from './server-fonts.mjs';
+import { bundledFontStylesheet, fontCssWithUrl, inlineBundledFontStylesheet } from './dist/bundled-fonts.js';
 
 const root = path.resolve('dist');
 const projectsRoot = path.resolve('GrapesJS', 'projects');
 const exportsRoot = path.resolve('GrapesJS', 'exports');
 const port = Math.max(1, Math.min(65535, Number(process.argv[2] || process.env.PORT || 5173)));
-const types = {'.html':'text/html','.css':'text/css','.js':'text/javascript','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.zip':'application/zip'};
+const types = {'.html':'text/html','.css':'text/css','.js':'text/javascript','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.ttf':'font/ttf','.zip':'application/zip'};
 await fsp.mkdir(projectsRoot, { recursive: true });
 await fsp.mkdir(exportsRoot, { recursive: true });
 const boundedPath=(directory,id)=>{const target=path.resolve(directory,id);if(!id||!/^[a-z0-9-]+$/.test(id)||!target.startsWith(directory+path.sep))throw new Error('Invalid project path');return target;};
@@ -163,8 +165,18 @@ async function createAiBundle(value) {
   const nodes=[];(value.project.pages||[]).forEach((page,index)=>flattenComponents(page.frames||page.component||page.components,nodes,null,page.name||page.id||`Page ${index+1}`));
   const assetIndex=[];for(const [file,asset] of assets){await fsp.writeFile(path.join(folder,'assets',file),asset.bytes);assetIndex.push({file,mime:asset.mime,bytes:asset.bytes.length,sha256:file.split('.')[0]});}
   const manifest={format:'forma-ai-recreation-bundle',version:2,name,id,createdAt,source:'GrapesJS 0.23.6 + Forma Workbench',purpose:'Framework-neutral source of truth for recreating this design in any programming language or UI framework.',canvas:{pages:value.project.pages.length},counts:{components:nodes.length,assets:assetIndex.length},files:{instructions:'AI-RECREATION.md',preview:'preview.html',html:'document.html',css:'styles.css',project:'project.grapesjs.json',components:'component-tree.json',tokens:'design-tokens.json',workbench:'workbench-data.json',assets:'assets/index.json'}};
-  const fontFile=path.join(root,'vendor','Inter-Variable.ttf');const bundledFont=fs.existsSync(fontFile)?await fsp.readFile(fontFile):null;const fontCss=bundledFont?"@font-face{font-family:'Inter';src:url('assets/fonts/Inter-Variable.ttf') format('truetype');font-style:normal;font-weight:100 900;font-display:swap}":'';
-  if(bundledFont){await fsp.mkdir(path.join(folder,'assets','fonts'),{recursive:true});await fsp.writeFile(path.join(folder,'assets','fonts','Inter-Variable.ttf'),bundledFont);assetIndex.push({file:'fonts/Inter-Variable.ttf',mime:'font/ttf',bytes:bundledFont.length,sha256:crypto.createHash('sha256').update(bundledFont).digest('hex').slice(0,12)});}
+  const bundledFonts = await readBundledDesignFonts(root, `${value.html}\n${value.css}`);
+  const fontLicenses = { 'Oswald-Variable.ttf': 'LICENSE.Oswald.txt', 'HappyMonkey-Regular.ttf': 'LICENSE.HappyMonkey.txt', 'RobotoMono-Variable.ttf': 'LICENSE.RobotoMono.txt' };
+  const fontFiles = [];
+  const fontCss = bundledFonts.map(font => fontCssWithUrl(font, `assets/fonts/${font.file}`)).join('\n');
+  await fsp.mkdir(path.join(folder,'assets','fonts'),{recursive:true});
+  for (const { file, bytes } of bundledFonts) {
+    fontFiles.push({ file, bytes });
+    const license = fontLicenses[file];
+    if (license) fontFiles.push({ file: license, bytes: await fsp.readFile(path.join(root, 'vendor', license)) });
+    assetIndex.push({ file: `fonts/${file}`, mime: 'font/ttf', bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex').slice(0,12) });
+  }
+  for (const { file, bytes } of fontFiles) await fsp.writeFile(path.join(folder, 'assets', 'fonts', file), bytes);
   manifest.counts.assets=assetIndex.length;manifest.files.fonts='fonts.css';
   const previewBody=/^\s*<body[\s>]/i.test(value.html)?value.html:`<body>${value.html}</body>`;
   const preview=`<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${name.replace(/[&<>]/g,'')}</title><style>${fontCss}${value.css}</style></head>${previewBody}</html>`;
@@ -173,7 +185,7 @@ async function createAiBundle(value) {
   const readme=`# ${name} — AI recreation bundle\n\nGive this entire folder or ZIP file to an AI coding agent together with the language or framework you want. Tell it to follow \`AI-RECREATION.md\`.\n\nStart with \`preview.html\` for the visual reference and \`manifest.json\` for the file map. The design source, instructions, styles, component data, Workbench metadata, embedded images, and Inter font are included locally.\n`;
   const files=[['manifest.json',JSON.stringify(manifest,null,2)],['README.md',readme],['AI-RECREATION.md',instructions+workbenchInstructions],['project.grapesjs.json',JSON.stringify(value.project,null,2)],['component-tree.json',JSON.stringify({project:name,generatedAt:createdAt,nodes},null,2)],['design-tokens.json',JSON.stringify(tokens,null,2)],['workbench-data.json',JSON.stringify(value.workbench||{},null,2)],['document.html',value.html],['styles.css',value.css],['fonts.css',fontCss],['preview.html',preview],['assets/index.json',JSON.stringify(assetIndex,null,2)]];
   for(const [file,data] of files){const target=path.join(folder,file);await fsp.mkdir(path.dirname(target),{recursive:true});await fsp.writeFile(target,data,'utf8');}
-  const zipEntries=files.map(([file,data])=>({name:`${id}-ai-recreation/${file}`,data}));for(const [file,asset] of assets)zipEntries.push({name:`${id}-ai-recreation/assets/${file}`,data:asset.bytes});if(bundledFont)zipEntries.push({name:`${id}-ai-recreation/assets/fonts/Inter-Variable.ttf`,data:bundledFont});
+  const zipEntries=files.map(([file,data])=>({name:`${id}-ai-recreation/${file}`,data}));for(const [file,asset] of assets)zipEntries.push({name:`${id}-ai-recreation/assets/${file}`,data:asset.bytes});for (const { file, bytes } of fontFiles) zipEntries.push({name:`${id}-ai-recreation/assets/fonts/${file}`,data:bytes});
   const zipPath=path.join(exportsRoot,`${id}-ai-recreation.zip`);await fsp.writeFile(zipPath,zipFiles(zipEntries));
   return {id,name,createdAt,folder,zip:zipPath,download:`/api/exports/${encodeURIComponent(id)}/download`,files:files.map(([file])=>file),assets:assetIndex.length,components:nodes.length};
 }
@@ -201,9 +213,9 @@ const server = http.createServer(async (req, res) => {
     }
     if(url.pathname==='/api/portable'&&req.method==='POST'){
       const value=await assetService.portable(await readBody(req));
-      if(typeof value.html==='string'&&value.html.includes('/vendor/inter.css')){
-        const font=await fsp.readFile(path.join(root,'vendor','Inter-Variable.ttf'));
-        value.html=value.html.replace(/<link\b[^>]*href=["']\/vendor\/inter\.css["'][^>]*>/gi,`<style>@font-face{font-family:Inter;src:url(data:font/ttf;base64,${font.toString('base64')}) format('truetype');font-style:normal;font-weight:100 900;font-display:swap}</style>`);
+      if(typeof value.html==='string'&&value.html.includes(bundledFontStylesheet)){
+        const fonts = await readBundledDesignFonts(root, value.html);
+        value.html = inlineBundledFontStylesheet(value.html, embeddedFontCss(fonts));
       }
       return sendJson(res,200,value);
     }

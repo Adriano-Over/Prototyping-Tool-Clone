@@ -14,3 +14,16 @@ test('asset manager imports an accepted image and records its project-backed URL
   assert.equal(calls[1][1].headers.get('X-Forma-Token'),'test-token');
 });
 
+test('variable-generated SVG assets retain their current mode without a redundant upload',async()=>{
+  const {createAssetManager}=await import('../dist/asset-manager.js');
+  const manager=createAssetManager({getProjectId:()=> 'project-1'});
+  const vector={
+    get:key=>({type:'image',assetId:'previous-mode',formaVectorTemplate:{svg:'<svg/>',variables:[]}})[key],
+    getAttributes:()=>({src:'data:image/svg+xml,%3Csvg%2F%3E'}),
+    addAttributes:()=>assert.fail('a saved fallback must not replace a generated vector'),
+  };
+  const editor={Pages:{getAll:()=>[{getMainComponent:()=>vector}]}};
+  manager.resolve(editor);
+  assert.equal(await manager.migrateDataUrls(editor),0);
+});
+

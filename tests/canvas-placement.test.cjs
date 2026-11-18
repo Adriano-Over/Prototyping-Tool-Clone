@@ -10,6 +10,14 @@ test('new objects target the Desktop frame even when a text layer has children',
   assert.equal(findCanvasBoard(wrapper.components, wrapper), desktop);
 });
 
+test('a page with several imported artboards opens at page scope', async () => {
+  const { hasMultipleImportedArtboards } = await import('../dist/canvas-placement.js');
+  const generated = { name: 'Desktop', components:[] };
+  const imported = id => ({attributes:{'data-figma-node-id':id},components:[]});
+  assert.equal(hasMultipleImportedArtboards({components:[generated,imported('1:2')]}),false);
+  assert.equal(hasMultipleImportedArtboards({components:[imported('1:2'),imported('1:3')]}),true);
+});
+
 test('new object coordinates are centered in the parent frame, independent of viewport zoom', async () => {
   const { centeredElementPosition } = await import('../dist/canvas-placement.js');
   assert.deepEqual(centeredElementPosition({ width: 1440, height: 4600 }, { width: 240, height: 45 }), { left: 600, top: 2277.5 });

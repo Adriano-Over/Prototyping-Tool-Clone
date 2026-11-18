@@ -134,6 +134,74 @@ test('Figma vector serialization keeps fill paths filled and stroke paths stroke
   assert.match(svg, /fill="none" stroke="rgba\(26, 51, 77, 1\)" stroke-width="2" stroke-opacity="1" stroke-linecap="round" stroke-linejoin="bevel"/);
 });
 
+test('Figma renders saved Boolean glyphs and expanded stroke paths without repainting their operands', async () => {
+  const { importParsedFigDocument } = await import('../fig-import.mjs');
+  const { encodeCommandsBlob, parseSVGPathData } = await import('openfig-core');
+  const shape = 'M0 0L16 0L16 16L0 16ZM1 1L15 1L15 15L1 15Z';
+  const blob = encodeCommandsBlob(parseSVGPathData(shape));
+  const paint = { type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, visible: true };
+  const page = { guid: guid(90), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
+  const base = { phase: 'CREATED', size: { x: 16, y: 16 }, transform: { m00: 1, m11: 1 } };
+  const boolean = { ...base, guid: guid(91), type: 'BOOLEAN_OPERATION', name: 'Frame glyph', fillPaints: [paint], fillGeometry: [{ commandsBlob: 0, windingRule: 'ODD' }] };
+  const operand = { ...base, guid: guid(92), type: 'RECTANGLE', name: 'Operand', fillPaints: [paint], parentIndex: { guid: boolean.guid, position: 'a' } };
+  const vector = { ...base, guid: guid(93), type: 'VECTOR', name: 'Cursor outline', strokeWeight: 2, strokePaints: [paint], strokeGeometry: [{ commandsBlob: 0, windingRule: 'ODD' }] };
+  const missing = { ...boolean, guid: guid(94), name: 'Unresolved Boolean', fillGeometry: [{ commandsBlob: 1 }] };
+  const bubble = { ...base, guid: guid(95), type: 'ROUNDED_RECTANGLE', name: 'Comment', rectangleCornerRadiiIndependent: true, rectangleTopLeftCornerRadius: 8, rectangleTopRightCornerRadius: 8, rectangleBottomRightCornerRadius: 8, rectangleBottomLeftCornerRadius: 2 };
+  const circle = { ...base, guid: guid(96), type: 'ELLIPSE', name: 'Resource dot' };
+  const project = importParsedFigDocument({ nodes: [page, boolean, operand, vector, missing, bubble, circle], childrenMap: new Map([[id(90), [boolean, vector, missing, bubble, circle]], [id(91), [operand]]]), images: new Map(), message: { blobs: [blob] }, header: { version: 101 } });
+  const [glyph, outline, fallback, comment, dot] = project.editor.grapesjs.pages[0].frames[0].component.components;
+  const decode = value => Buffer.from(value.match(/base64,([\w+/=]+)/)[1], 'base64').toString('utf8');
+  assert.equal(glyph.style['background-color'], undefined);
+  const [vectorPaint, hiddenOperand] = glyph.components;
+  assert.equal(vectorPaint.tagName, 'svg');
+  assert.equal(vectorPaint.layerable, false);
+  assert.equal(vectorPaint.style['pointer-events'], 'none');
+  assert.equal(vectorPaint.components[0].attributes.d, shape);
+  assert.equal(vectorPaint.components[0].attributes['fill-rule'], 'evenodd');
+  assert.equal(hiddenOperand.style.display, 'none');
+  assert.equal(hiddenOperand.attributes['data-forma-boolean-operand'], 'true');
+  assert.deepEqual(project.forma.scene.nodes[glyph.formaNodeId].children, [hiddenOperand.formaNodeId]);
+  assert.equal(project.forma.scene.nodes[hiddenOperand.formaNodeId].visible, true);
+  assert.match(decode(outline.attributes.src), /fill-rule="evenodd" fill="rgba\(0, 0, 0, 1\)" stroke="none" stroke-width="0"/);
+  assert.equal(fallback.style['background-color'], undefined);
+  assert.ok(project.importSummary.diagnostics.some(item => item.code === 'BOOLEAN_GEOMETRY_UNSUPPORTED'));
+  assert.equal(comment.style['border-radius'], '8px 8px 8px 2px');
+  assert.equal(dot.style['border-radius'], '50%');
+});
+
+test('imported centered vector strokes keep fractional origins and nominal layer bounds', async () => {
+  const { importParsedFigDocument } = await import('../fig-import.mjs');
+  const { preciseGeometryPath } = await import('../fig-import-vector-paint.mjs');
+  const { encodeCommandsBlob, parseSVGPathData } = await import('openfig-core');
+  const blob = encodeCommandsBlob(parseSVGPathData('M0.001953125 0L5 0L5 5Z'));
+  assert.equal(preciseGeometryPath(blob.bytes || blob), 'M0.001953125 0L5 0L5 5Z');
+  assert.equal(preciseGeometryPath(Uint8Array.from([1, 0, 0])), null);
+  const page = { guid: guid(90), type: 'CANVAS', phase: 'CREATED' };
+  const frame = { guid: guid(91), type: 'FRAME', phase: 'CREATED', size: { x: 100, y: 100 } };
+  const group = { guid: guid(92), type: 'FRAME', phase: 'CREATED', size: { x: 16, y: 16 }, transform: { m02: 0.5, m12: 1.25 }, parentIndex: { guid: frame.guid, position: 'a' } };
+  const shape = { guid: guid(93), type: 'ELLIPSE', phase: 'CREATED', size: { x: 5.125, y: 5.25 }, transform: { m02: 10.25, m12: 7.5 }, parentIndex: { guid: group.guid, position: 'a' },
+    strokeAlign: 'CENTER', strokeWeight: 1, strokePaints: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 } }], strokeGeometry: [{ commandsBlob: 0 }] };
+  const project = importParsedFigDocument({ nodes: [page, frame, group, shape], childrenMap: new Map([[id(90), [frame]], [id(91), [group]], [id(92), [shape]]]), images: new Map(), message: { blobs: [blob] }, header: { version: 101 } });
+  const [root] = project.editor.grapesjs.pages[0].frames[0].component.components;
+  const [container] = root.components;
+  const [ellipse] = container.components;
+  assert.equal(container.style.translate, '0.5px 0.25px');
+  assert.equal(container.style['overflow-clip-margin'], '1px');
+  assert.equal(ellipse.style.translate, '0.25px 0.5px');
+  assert.equal(ellipse.style.width, '5.125px');
+  assert.equal(ellipse.style['--forma-vector-stroke-width'], '1px');
+  assert.equal(ellipse.components[0].components[0].tagName, 'ellipse');
+});
+
+test('expanded outside strokes exclude the inside of the Figma glyph', async () => {
+  const { vectorPathsToDataUrl } = await import('../fig-import.mjs');
+  const outer = { svgPath: 'M0 0L16 0L16 16L0 16Z', paints: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }] };
+  const inside = { svgPath: 'M1 1L15 1L15 15L1 15Z', paints: [] };
+  const svg = Buffer.from(vectorPathsToDataUrl({fill:[inside],stroke:[outer]}, {width:16,height:16,expandedStroke:true,strokeAlign:'OUTSIDE'}).split(',')[1], 'base64').toString();
+  assert.match(svg, /<mask [^>]+><rect width="16" height="16" fill="white"\/><path d="M1 1L15 1L15 15L1 15Z" fill-rule="nonzero" fill="black"/);
+  assert.match(svg, /<g mask="url\(#stroke-alignment\)"><path d="M0 0L16 0L16 16L0 16Z"/);
+});
+
 test('Figma inside and outside strokes keep the original shape bounds', async () => {
   const { importParsedFigDocument } = await import('../fig-import.mjs');
   const page = { guid: guid(10), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };

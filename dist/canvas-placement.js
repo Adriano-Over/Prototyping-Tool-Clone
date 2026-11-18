@@ -24,6 +24,13 @@ function children(model) {
   return Array.isArray(result?.models) ? result.models : Array.isArray(result) ? result : [];
 }
 
+export function hasMultipleImportedArtboards(root) {
+  return children(root).filter(item => {
+    const attributes = item?.getAttributes?.() || value(item, 'attributes');
+    return Boolean(attributes?.['data-figma-node-id']);
+  }).length > 1;
+}
+
 export function findCanvasBoard(components, fallback) {
   const direct = Array.isArray(components?.models) ? components.models : Array.isArray(components) ? components : [];
   const all = [];

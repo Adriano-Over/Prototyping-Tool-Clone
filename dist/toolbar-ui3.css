@@ -1,11 +1,166 @@
-/* Figma UI3 toolbar proportions, applied to Forma's existing functional controls. */
-.tool-dock{gap:2px;padding:6px 8px;min-height:52px;border-radius:16px;border:1px solid #e5e7e7;box-shadow:0 4px 14px #17251d18,0 1px 3px #17251d10}
-.tool-dock .tool-group-main{width:32px;height:32px;border-radius:6px;color:#1e1e1e}
-.tool-dock .tool-group-main.active,.tool-dock .tool-group-main[aria-pressed=true]{background:#0d99ff;color:#fff}
-.tool-dock .tool-group-menu{width:16px;height:32px;color:#1e1e1e}
-.tool-dock .dock-divider{margin:0 4px}
-.tool-dock .tool-mode-switch{display:flex;align-items:center;background:#f3f4f4;border:0;margin-left:6px;padding:4px;border-radius:12px;gap:2px}
-.tool-dock .tool-mode-switch button{width:32px;height:32px;border-radius:6px;color:#66706a}
-.tool-dock .tool-mode-switch button.active{background:#fff;color:#1688f2;box-shadow:0 1px 3px #17251d1a,inset 0 0 0 1px #dbe9f7}
-.tool-dock .tool-group-main svg{width:16px;height:16px}
-@media(max-width:900px){.tool-dock .tool-mode-switch{display:none}}
+.tool-dock {
+  --toolbar-ink: #28483d;
+  --toolbar-surface: #f9fcf9;
+  --toolbar-border: #dbe7de;
+  position: absolute;
+  inset-inline: 12px;
+  bottom: 24px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.tool-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 13px;
+  background: var(--toolbar-surface);
+  box-shadow: 0 7px 22px #1e3c3020, 0 1px 3px #243e3014;
+  pointer-events: auto;
+}
+
+.tool-strip-primary,
+.tool-strip-utilities {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.tool-strip-primary { min-width: 0; }
+.tool-strip-utilities { padding-left: 5px; border-left: 1px solid var(--toolbar-border); }
+
+.tool-group,
+.tool-mode {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.tool-group:has(.tool-menu:not([hidden])),
+.tool-mode:has(.tool-menu:not([hidden])) { z-index: 1; }
+
+.tool-dock button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--toolbar-ink);
+  padding: 0;
+}
+
+.tool-dock button:focus-visible {
+  outline: 2px solid #198462;
+  outline-offset: 2px;
+  z-index: 2;
+}
+
+.tool-group-main { width: 34px; height: 34px; border-radius: 7px; }
+.tool-group-main > svg { width: 19px; height: 19px; }
+.tool-group-menu { width: 18px; height: 30px; border-radius: 5px; }
+.tool-group-menu > svg { width: 13px; height: 13px; }
+
+.tool-group-main:hover,
+.tool-group-menu:hover,
+.tool-group-menu[aria-expanded="true"] { background: #e9f3ec; }
+
+.tool-group-main[aria-pressed="true"] {
+  color: white;
+  background: #147e60;
+  box-shadow: inset 0 0 0 1px #0e6c51;
+}
+
+.tool-mode { pointer-events: auto; }
+
+.tool-dock .tool-mode-trigger {
+  height: 46px;
+  gap: 8px;
+  padding: 0 12px;
+  color: #f2faf4;
+  background: #244b3b;
+  border: 1px solid #204235;
+  border-radius: 13px;
+  box-shadow: 0 6px 18px #21372c24;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tool-dock .tool-mode-trigger:hover,
+.tool-dock .tool-mode-trigger[aria-expanded="true"] { background: #2e604b; }
+.tool-mode-icon, .tool-mode-chevron { display: flex; }
+.tool-mode-icon svg { width: 16px; height: 16px; }
+.tool-mode-chevron { opacity: .82; }
+
+.tool-menu {
+  position: absolute;
+  z-index: 3;
+  bottom: calc(100% + 11px);
+  left: var(--menu-offset, 0);
+  width: 228px;
+  max-height: min(65vh, 360px);
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 11px;
+  background: var(--toolbar-surface);
+  box-shadow: 0 10px 28px #1e3c302b;
+}
+
+.tool-menu[hidden] { display: none; }
+
+.tool-dock .tool-menu-option {
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.tool-dock .tool-menu-option[aria-checked="true"] { color: #126147; background: #e4f2e8; }
+.tool-menu-option:hover,
+.tool-menu-option:focus-visible { background: #dceee3; }
+.tool-dock .tool-menu-option:focus-visible { outline-offset: -2px; }
+.tool-menu-option > svg { flex: none; width: 16px; height: 16px; }
+.tool-menu-option > span { overflow-wrap: anywhere; }
+
+.tool-menu-option kbd {
+  margin-left: auto;
+  color: #526b5d;
+  font: 11px Inter, Arial, sans-serif;
+  white-space: nowrap;
+}
+
+.draw-preview{position:fixed;z-index:55;pointer-events:none;border:1px solid #1688f2;background:#1688f21c}
+.draw-preview[data-kind=ellipse]{border-radius:50%}
+.draw-preview[data-kind=line],.draw-preview[data-kind=arrow],.draw-preview[data-kind=pen],.draw-preview[data-kind=pencil]{background:#1688f2;height:2px!important;transform-origin:0 50%}
+
+@media (max-width: 900px) {
+  .tool-dock { inset-inline: 8px; bottom: 14px; }
+  .tool-strip { display: contents; }
+  .tool-strip-primary,
+  .tool-strip-utilities {
+    max-width: 100%;
+    padding: 3px;
+    border: 1px solid var(--toolbar-border);
+    border-radius: 10px;
+    background: var(--toolbar-surface);
+    box-shadow: 0 5px 14px #1e3c3020;
+  }
+  .tool-group-main { width: 32px; height: 32px; }
+  .tool-group-menu { width: 16px; height: 28px; }
+  .tool-dock .tool-mode-trigger { height: 40px; border-radius: 10px; }
+}

@@ -49,3 +49,16 @@ test('center delta aligns frame and viewport centers', async () => {
   assert.deepEqual(calculateCenterDelta({left:0,top:0,width:1000,height:800},{left:200,top:100,width:400,height:300}),{x:100,y:150});
   assert.deepEqual(calculateCenteredCoords({x:-20,y:10},{left:0,top:0,width:1000,height:800},{left:200,top:100,width:400,height:300}),{x:80,y:160});
 });
+
+test('fit selection measures the layer in the zoomed iframe and centers it in the editor', async () => {
+  const { canvasRectToViewport, calculateCenteredCoords, calculateFitZoom } = await import('../dist/zoom-controller.js');
+  const layer={left:60,top:100,width:1024,height:800};
+  const frame={left:300,top:180};
+  const view={left:280,top:140,width:620,height:500};
+  const screen=canvasRectToViewport(layer,frame,.15);
+  const fit=calculateFitZoom(view,{width:screen.width/.15,height:screen.height/.15},36);
+  assert.equal(fit,53.5);
+  const coords=calculateCenteredCoords({x:0,y:0},view,canvasRectToViewport(layer,frame,fit/100));
+  assert.ok(Math.abs(coords.x+16.02)<1e-9);
+  assert.equal(coords.y,-57.5);
+});

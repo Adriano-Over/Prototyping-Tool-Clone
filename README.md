@@ -35,7 +35,7 @@ The C++20 source and build instructions are in [`desktop`](desktop/README.md).
 - Zoom continuously from 1% to 25,600%; use cursor-anchored Ctrl/⌘+wheel, trackpad pinch, 1.5× zoom buttons, direct percentage entry, and screen-speed wheel/hand-tool panning. Shift+1 fits the page and Shift+2 fits the current selection.
 - Designs autosave in this browser. Use Export → Download project for a portable JSON backup, or Open project to import one.
 - Designs also autosave as readable JSON files in [`GrapesJS/projects`](GrapesJS/projects). Use **Projects** in the top bar to browse, search, create, open, and duplicate them.
-- Preview designs and export all pages as portable HTML with CSS, local images, the bundled font, and prototype navigation included.
+- Preview designs and export all pages as portable HTML with CSS, local images, the bundled fonts used by the design, and prototype navigation included.
 - Download portable JSON backups with embedded project images; duplicated projects own their image files independently.
 - Recover saved projects from disk if browser recovery is missing. Conflicting browser copies remain downloadable in Projects, and stale sessions cannot overwrite a newer disk revision.
 - Open **Workbench** for vector shapes, image placement, flexible auto layout with independent row/column gaps, layout grids, linked components with variants and overrides, variable collections and modes, prototype interactions (including overlays, back navigation, transitions, conditional/delayed actions, keyboard and drag/drop triggers), comments, named versions, and developer inspection.
