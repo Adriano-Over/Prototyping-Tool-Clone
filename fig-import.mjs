@@ -415,7 +415,7 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     const variableModes = node.variableModeBySetMap ? normalizeVariableModes(node.variableModeBySetMap, id) : {};
     const stackLayout = normalizeFigStackLayout(node);
     if (!stackLayout && node.stackMode && !['NONE', 'UNKNOWN'].includes(String(node.stackMode).toUpperCase())) addDiagnostic({ severity: 'warning', code: 'LAYOUT_MODE_UNSUPPORTED', sourceNodeId: id, propertyPath: 'stackMode', reason: `Stack mode ${node.stackMode} does not have a Forma layout adapter yet.`, fallback: 'Source children and their saved coordinates remain available.' });
-    const supported = new Set(['FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL', 'RECTANGLE', 'ROUNDED_RECTANGLE', 'ELLIPSE', 'STAR', 'POLYGON', 'LINE', 'VECTOR', 'TEXT', 'BOOLEAN_OPERATION', 'SLICE']);
+    const supported = new Set(['FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL', 'RECTANGLE', 'ROUNDED_RECTANGLE', 'ELLIPSE', 'STAR', 'POLYGON', 'REGULAR_POLYGON', 'LINE', 'VECTOR', 'TEXT', 'BOOLEAN_OPERATION', 'SLICE']);
     if (!supported.has(type)) {
       unsupported.add(type || 'unknown');
       addDiagnostic({ severity: 'warning', code: 'NODE_TYPE_UNSUPPORTED', sourceNodeId: id, propertyPath: 'type', reason: `Node type ${type || 'unknown'} has no dedicated Forma renderer.`, fallback: 'Preserved as a basic editable layer.' });
@@ -503,7 +503,7 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     if (fill?.opacity < 1) style['background-blend-mode'] = 'normal';
     const shadows = (node.effects || []).filter(effect => effect?.visible !== false && ['DROP_SHADOW', 'INNER_SHADOW'].includes(effect.type)).map(effect => `${effect.type === 'INNER_SHADOW' ? 'inset ' : ''}${Number(effect.offset?.x || 0)}px ${Number(effect.offset?.y || 0)}px ${Math.max(0, Number(effect.radius || 0))}px ${Number(effect.spread || 0)}px ${colorCss(effect.color) || 'rgba(0,0,0,.25)'}`);
     const strokePaints = (node.strokePaints || []).filter(paint => paint?.visible !== false && Number(paint?.opacity ?? 1) > 0);
-    const stroke = ['VECTOR', 'BOOLEAN_OPERATION'].includes(type) ? null : paintCss(strokePaints, images, [], resolvePaintVariable);
+    const stroke = ['VECTOR', 'BOOLEAN_OPERATION', 'REGULAR_POLYGON'].includes(type) ? null : paintCss(strokePaints, images, [], resolvePaintVariable);
     let vectorPaint = null;
     let paintOutset = 0;
     if (stroke?.color && Number(node.strokeWeight) > 0) {
@@ -536,7 +536,7 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
       Object.assign(style, figTextStyle(node));
     }
     let resolvedBoolean = false;
-    if (type === 'VECTOR' || type === 'BOOLEAN_OPERATION') {
+    if (type === 'VECTOR' || type === 'BOOLEAN_OPERATION' || type === 'REGULAR_POLYGON') {
       const paths = resolveVectorNodePaths(doc, node);
       if (type === 'BOOLEAN_OPERATION') vectorPaint = inlineBooleanPaint(paths, node, component.formaPartKey, style, resolvePaintVariable);
       const vector = vectorPaint ? null : svgForVector(paths, node, variableIdByAssetRef);

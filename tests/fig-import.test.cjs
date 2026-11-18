@@ -169,6 +169,33 @@ test('Figma renders saved Boolean glyphs and expanded stroke paths without repai
   assert.equal(dot.style['border-radius'], '50%');
 });
 
+test('Figma regular polygons import as editable SVG geometry without an unsupported-node diagnostic', async () => {
+  const { importParsedFigDocument } = await import('../fig-import.mjs');
+  const { encodeCommandsBlob, parseSVGPathData } = await import('openfig-core');
+  const polygonPath = 'M8 0L16 6L13 16L3 16L0 6Z';
+  const blob = encodeCommandsBlob(parseSVGPathData(polygonPath));
+  const page = { guid: guid(80), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
+  const polygon = {
+    guid: guid(81), type: 'REGULAR_POLYGON', name: 'Five-sided polygon', phase: 'CREATED',
+    size: { x: 16, y: 16 }, transform: { m00: 1, m02: 24, m10: 0, m12: 32 },
+    fillPaints: [{ type: 'SOLID', color: { r: 0.2, g: 0.4, b: 0.6, a: 1 }, opacity: 1, visible: true }],
+    fillGeometry: [{ commandsBlob: 0, windingRule: 'NONZERO' }],
+  };
+  const project = importParsedFigDocument({
+    nodes: [page, polygon], childrenMap: new Map([[id(80), [polygon]]]),
+    images: new Map(), message: { blobs: [blob] }, header: { version: 101 },
+  });
+  const imported = project.editor.grapesjs.pages[0].frames[0].component.components[0];
+  assert.equal(imported.attributes['data-figma-node-type'], 'REGULAR_POLYGON');
+  assert.equal(imported.type, 'image');
+  assert.match(imported.attributes.src, /^data:image\/svg\+xml;base64,/);
+  const svg = Buffer.from(imported.attributes.src.split(',')[1], 'base64').toString('utf8');
+  assert.match(svg, new RegExp(polygonPath));
+  assert.match(svg, /fill="rgba\(51, 102, 153, 1\)"/);
+  assert.equal(project.importSummary.unsupportedTypes.includes('REGULAR_POLYGON'), false);
+  assert.equal(project.importSummary.diagnostics.some(item => item.code === 'NODE_TYPE_UNSUPPORTED' && item.sourceNodeId === id(81)), false);
+});
+
 test('imported centered vector strokes keep fractional origins and nominal layer bounds', async () => {
   const { importParsedFigDocument } = await import('../fig-import.mjs');
   const { preciseGeometryPath } = await import('../fig-import-vector-paint.mjs');
