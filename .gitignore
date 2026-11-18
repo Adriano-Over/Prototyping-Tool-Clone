@@ -14,4 +14,5 @@ desktop/release/
 # User designs and generated recreation bundles
 GrapesJS/projects/*
 !GrapesJS/projects/.gitkeep
+GrapesJS/workspace/
 GrapesJS/exports/
