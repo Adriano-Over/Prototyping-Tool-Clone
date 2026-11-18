@@ -3,7 +3,20 @@ function value(model, key) {
 }
 
 function style(model) {
-  return typeof model?.getStyle === 'function' ? model.getStyle() || {} : model?.style || {};
+  const result = typeof model?.getStyle === 'function' ? { ...(model.getStyle() || {}) } : { ...(model?.style || {}) };
+  const element = model?.view?.el;
+  const view = element?.ownerDocument?.defaultView;
+  if (!element || !view) return result;
+  try {
+    const computed = view.getComputedStyle(element);
+    for (const key of ['position', 'left', 'top', 'width', 'height']) {
+      const value = computed.getPropertyValue(key);
+      if (value && value !== 'auto') result[key] = value;
+    }
+  } catch {}
+  if (!Number.parseFloat(result.width) && element.offsetWidth) result.width = `${element.offsetWidth}px`;
+  if (!Number.parseFloat(result.height) && element.offsetHeight) result.height = `${element.offsetHeight}px`;
+  return result;
 }
 
 function children(model) {
@@ -79,13 +92,30 @@ export function canvasWrapperExtent(framePosition = {}, frameSize = {}) {
   const top = Number(framePosition.top) || 0;
   const width = Math.max(0, Number(frameSize.width) || 0);
   const height = Math.max(0, Number(frameSize.height) || 0);
-  // Keep the editor workspace aligned to the frame's actual bounds. Extra
-  // fixed right/bottom padding made the imported page look off-center and
-  // could appear as a dark strip beneath otherwise correctly sized frames.
+  // Mirror the frame's leading inset on the trailing edges so the workspace
+  // stays centered around the frame instead of ending at its right/bottom.
   return {
-    width: Math.max(1, Math.ceil(left + width)),
-    height: Math.max(1, Math.ceil(top + height)),
+    width: Math.max(1, Math.ceil(left * 2 + width)),
+    height: Math.max(1, Math.ceil(top * 2 + height)),
   };
+}
+
+export function canvasContentExtent(currentSize = {}, items = []) {
+  const cssNumber = value => {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  let width = Math.max(1, cssNumber(currentSize.width));
+  let height = Math.max(1, cssNumber(currentSize.height));
+  for (const item of items || []) {
+    const left = cssNumber(item?.left);
+    const top = cssNumber(item?.top);
+    const itemWidth = Math.max(0, cssNumber(item?.width));
+    const itemHeight = Math.max(0, cssNumber(item?.height));
+    width = Math.max(width, left + itemWidth);
+    height = Math.max(height, top + itemHeight);
+  }
+  return { width: Math.ceil(width), height: Math.ceil(height) };
 }
 
 export function gradientFill(mode, start, end, angle = 135) {

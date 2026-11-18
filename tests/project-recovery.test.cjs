@@ -21,3 +21,11 @@ test('failed folder saves retain immediate browser recovery; quota failure is re
   const offline=await setup({cache:project(),fail:true});await offline.store.recoverStartup();await assert.rejects(offline.store.saveToFolder(),/offline/);assert.ok(offline.saved.getItem('forma-project-cache:saved'));assert.match(offline.statuses.at(-1),/folder save failed/);
   const full=await setup({quota:true});assert.equal(full.store.writeSnapshot(),false);assert.match(full.statuses.at(-1),/full/);
 });
+test('browser recovery snapshots preserve schema 3 scene and import source metadata',async()=>{
+  const scene={version:1,pages:['node_a'],nodes:{node_a:{id:'node_a',children:[]}},diagnostics:[{code:'FONT_MISSING',sourceNodeId:'1:2'}]};
+  const importSources=[{id:'doc_a',sha256:'abc',figVersion:101}];
+  const cached={...project(),schemaVersion:3,updatedAt:'2026-10-19T11:00:00Z',forma:{components:[],scene,importSources}};
+  const {store}=await setup({cache:cached});
+  const snapshot=store.readSnapshot();assert.deepEqual(snapshot.forma.scene,scene);assert.deepEqual(snapshot.forma.importSources,importSources);
+  const recovered=await store.recoverStartup();assert.deepEqual(recovered.forma.scene,scene);assert.deepEqual(recovered.forma.importSources,importSources);
+});

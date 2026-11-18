@@ -1,6 +1,7 @@
 const test=require('node:test');const assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path'),net=require('node:net');
 const {spawn}=require('node:child_process');const {once}=require('node:events');
+const crypto=require('node:crypto');
 
 test('portable assets, revision conflicts and local API boundaries',async t=>{
   const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'forma-reliability-'));
@@ -12,13 +13,20 @@ test('portable assets, revision conflicts and local API boundaries',async t=>{
   const request=(route,options={})=>fetch(base+route,{...options,headers:{'content-type':'application/json','x-forma-token':token,...options.headers}});
   const json=async(route,body)=>{const response=await request(route,{method:'POST',body:JSON.stringify(body)});const value=await response.json();assert.ok(response.ok,JSON.stringify(value));return value;};
   const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64');
-  const project={format:'forma-project',schemaVersion:2,id:'source',name:'Source',editor:{grapesjs:{pages:[{id:'p1',component:{type:'wrapper',components:[]}}]}},forma:{components:[],variables:{mode:'dark',modes:{dark:{brand:'#123456'}}},comments:{node:[{text:'Keep me'}]},prototype:{},layoutMetadata:{}},assets:[]};
+  const scene={version:1,sourceDocuments:{doc_a:{id:'doc_a',sha256:'abc',figVersion:101,parser:{name:'openfig-core',version:'0.4.1'},sourceRecordsAssetId:'asset_records'}},nodes:{node_a:{id:'node_a',source:{documentId:'doc_a',nodeId:'1:2',occurrencePath:[]},children:[],fills:[]}},pages:['node_a'],resources:{components:{},variables:{},collections:{},styles:{},assets:{}},sourceOccurrences:{'["doc_a",[],"1:2"]':'node_a'},diagnostics:[]};
+  const importSources=[{id:'doc_a',sha256:'abc',figVersion:101,sourceRecordsAssetId:'asset_records',blobManifestAssetId:'asset_blobs'}];
+  const records=Buffer.from('verified compressed Figma records'),recordsHash=crypto.createHash('sha256').update(records).digest('hex'),recordsAsset={id:'asset_'+recordsHash.slice(0,20),name:'source-records.json.gz',mime:'application/vnd.forma.fig-source+gzip',sha256:recordsHash,bytes:records.length,dataUrl:`data:application/vnd.forma.fig-source+gzip;base64,${records.toString('base64')}`};
+  scene.sourceDocuments.doc_a.sourceRecordsAssetId=recordsAsset.id;scene.resources.assets[recordsAsset.id]={id:recordsAsset.id,mime:recordsAsset.mime,sha256:recordsHash,bytes:records.length};importSources[0].sourceRecordsAssetId=recordsAsset.id;
+  const project={format:'forma-project',schemaVersion:3,id:'source',name:'Source',editor:{grapesjs:{pages:[{id:'p1',component:{type:'wrapper',components:[]}}]}},forma:{components:[],variables:{mode:'dark',modes:{dark:{brand:'#123456'}}},comments:{node:[{text:'Keep me'}]},prototype:{},layoutMetadata:{},scene,importSources},assets:[recordsAsset]};
   const first=await json('/api/projects',project);
+  const initiallyLoaded=await (await fetch(base+'/api/projects/source')).json();assert.equal(initiallyLoaded.schemaVersion,3);assert.deepEqual(initiallyLoaded.forma.scene,scene);assert.deepEqual(initiallyLoaded.forma.importSources,importSources);
   const assetResponse=await request('/api/projects/source/assets',{method:'POST',headers:{'content-type':'image/png'},body:png});assert.equal(assetResponse.status,200);const asset=await assetResponse.json();
-  const src=`/api/projects/source/assets/${asset.id}`;project.assets=[asset];project.editor.grapesjs.pages[0].component.components=[{type:'image',formaNodeId:'node',assetId:asset.id,attributes:{src}}];project.forma.components=[{name:'Picture',data:{type:'image',attributes:{src}}}];
+  const src=`/api/projects/source/assets/${asset.id}`;project.assets=[asset,recordsAsset];project.editor.grapesjs.pages[0].component.components=[{type:'image',formaNodeId:'node',assetId:asset.id,attributes:{src}}];project.forma.components=[{name:'Picture',data:{type:'image',attributes:{src}}}];
   const saved=await json('/api/projects',{...project,baseRevision:first.revision});
-  const backup=await json('/api/portable',project);assert.match(backup.assets[0].dataUrl,/^data:image\/png;base64,/);assert.equal(JSON.stringify(backup).includes('/api/projects/'),false);
+  const backup=await json('/api/portable',project);assert.match(backup.assets[0].dataUrl,/^data:image\/png;base64,/);assert.match(backup.assets[1].dataUrl,/^data:application\/vnd\.forma\.fig-source\+gzip;base64,/);assert.equal(JSON.stringify(backup).includes('/api/projects/'),false);assert.deepEqual(backup.forma.scene,scene);assert.deepEqual(backup.forma.importSources,importSources);
+  const sourceAssetResponse=await fetch(base+`/api/projects/source/assets/${recordsAsset.id}`);assert.equal(sourceAssetResponse.status,200);assert.match(sourceAssetResponse.headers.get('content-type'),/application\/vnd\.forma\.fig-source\+gzip/);assert.deepEqual(Buffer.from(await sourceAssetResponse.arrayBuffer()),records);
   const copy=await json('/api/projects',{...backup,id:'',name:'Copy'});assert.equal((await fetch(base+`/api/projects/${copy.id}/assets/${asset.id}`)).status,200);
+  const version=await json('/api/projects/source/versions',{name:'Scene snapshot',project});assert.equal(version.schemaVersion,3);const versionProject=await (await fetch(base+`/api/projects/source/versions/${version.id}`)).json();assert.deepEqual(versionProject.forma.scene,scene);assert.deepEqual(versionProject.forma.importSources,importSources);
   const stale=await request('/api/projects',{method:'POST',body:JSON.stringify({...project,baseRevision:first.revision})});assert.equal(stale.status,409);assert.equal((await (await fetch(base+'/api/projects/source')).json()).revision,saved.revision);
   const concurrent=await Promise.all([1,2].map(()=>request('/api/projects',{method:'POST',body:JSON.stringify({...project,baseRevision:saved.revision})})));assert.deepEqual(concurrent.map(response=>response.status).sort(),[200,409]);
   const bundle=await json('/api/exports',{id:'bundle',name:'Bundle',project:project.editor.grapesjs,workbench:project.forma,html:`<img src="${src}">`,css:`.image{background-image:url('${src}')}`});
@@ -27,7 +35,8 @@ test('portable assets, revision conflicts and local API boundaries',async t=>{
   const standalone=await json('/api/portable',{id:'source',html:`<img src="${src}">`});assert.ok(standalone.html.includes('data:image/png;base64,'));
   assert.equal((await request('/api/projects/source',{method:'DELETE'})).status,200);
   const imported=await json('/api/projects',{...backup,id:'',name:'Imported after source removal'});assert.equal((await fetch(base+`/api/projects/${imported.id}/assets/${asset.id}`)).status,200);
-  const loaded=await (await fetch(base+'/api/projects/'+imported.id)).json();assert.equal(loaded.forma.comments.node[0].text,'Keep me');assert.ok(loaded.forma.components[0].data.attributes.src.includes(imported.id));
+  const loaded=await (await fetch(base+'/api/projects/'+imported.id)).json();assert.equal(loaded.forma.comments.node[0].text,'Keep me');assert.ok(loaded.forma.components[0].data.attributes.src.includes(imported.id));assert.deepEqual(loaded.forma.scene,scene);assert.deepEqual(loaded.forma.importSources,importSources);
+  const legacy=await json('/api/projects',{format:'forma-project',schemaVersion:2,id:'legacy',name:'Legacy',editor:{grapesjs:{pages:[{id:'legacy-page'}]}},forma:{components:[]},assets:[]});const migratedLegacy=await (await fetch(base+`/api/projects/${legacy.id}`)).json();assert.equal(migratedLegacy.schemaVersion,3);assert.equal(migratedLegacy.forma.scene,null);assert.deepEqual(migratedLegacy.forma.importSources,[]);
   const svg=await request(`/api/projects/${imported.id}/assets`,{method:'POST',headers:{'content-type':'image/svg+xml'},body:'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'});const svgAsset=await svg.json();const servedSvg=await fetch(base+`/api/projects/${imported.id}/assets/${svgAsset.id}`);assert.match(servedSvg.headers.get('content-security-policy'),/sandbox/);
   await t.test('rejects foreign origin, missing token, wrong host and simple text requests',async()=>{
     assert.equal((await request('/api/projects',{method:'POST',headers:{origin:'https://untrusted.invalid'},body:JSON.stringify(project)})).status,403);

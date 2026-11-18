@@ -50,20 +50,21 @@ const safeId = value => String(value || '').normalize('NFKD').replace(/[\u0300-\
   .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
 const safeOpaqueId = value => String(value || '').toLowerCase().replace(/[^a-z0-9_-]/g,'').slice(0,120);
 const editorData = value => value?.editor?.grapesjs || value?.data || value;
-const emptyForma = () => ({components:[],variables:{mode:'light',modes:{light:{},dark:{}}},comments:{},prototype:{},layoutMetadata:{}});
+const emptyForma = () => ({components:[],variables:{mode:'light',modes:{light:{},dark:{}}},comments:{},prototype:{},layoutMetadata:{},scene:null,importSources:[]});
 
 function normalizeProject(value, id, name) {
   const data = editorData(value);
   if (!Array.isArray(data?.pages) || !data.pages.length) throw new Error('Invalid GrapesJS project');
-  if (value?.format === 'forma-project' && Number(value.schemaVersion) > 2) throw new Error(`Unsupported project schema ${value.schemaVersion}`);
+  if (value?.format === 'forma-project' && Number(value.schemaVersion) > 3) throw new Error(`Unsupported project schema ${value.schemaVersion}`);
   const timestamp = new Date().toISOString();
+  const forma=value?.forma&&typeof value.forma==='object'?value.forma:emptyForma();
   return {
-    format:'forma-project', schemaVersion:2, id,
+    format:'forma-project', schemaVersion:3, id,
     name:String(name || value?.name || 'Untitled project').slice(0,120),
     createdAt:value?.createdAt || value?.updatedAt || timestamp,
     updatedAt:timestamp,
     editor:{grapesjs:data},
-    forma:value?.forma && typeof value.forma === 'object' ? value.forma : emptyForma(),
+    forma:{...emptyForma(),...forma,scene:forma.scene&&typeof forma.scene==='object'&&!Array.isArray(forma.scene)?forma.scene:null,importSources:Array.isArray(forma.importSources)?forma.importSources:[]},
     assets:Array.isArray(value?.assets) ? value.assets : [],
   };
 }
@@ -255,7 +256,7 @@ const server = http.createServer(async (req, res) => {
     }
     if(versionMatch&&req.method==='POST'&&!versionMatch[2]){
       return await mutateProject(async()=>{
-      const id=safeId(decodeURIComponent(versionMatch[1]));const value=await readBody(req);const project=normalizeProject(value.project||value,id,value.project?.name||value.name);const versionId=`version_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;const record={id:versionId,name:String(value.name||'Version').slice(0,120),createdAt:new Date().toISOString(),schemaVersion:2,file:versionId+'.json'};await writeAtomic(path.join(versionsDir(id),record.file),JSON.stringify(project,null,2));let index={versions:[]};try{index=JSON.parse(await fsp.readFile(versionIndexFile(id),'utf8'));}catch{}index.versions.unshift(record);await writeAtomic(versionIndexFile(id),JSON.stringify(index,null,2));return sendJson(res,200,record);
+      const id=safeId(decodeURIComponent(versionMatch[1]));const value=await readBody(req);const project=normalizeProject(value.project||value,id,value.project?.name||value.name);const versionId=`version_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;const record={id:versionId,name:String(value.name||'Version').slice(0,120),createdAt:new Date().toISOString(),schemaVersion:3,file:versionId+'.json'};await writeAtomic(path.join(versionsDir(id),record.file),JSON.stringify(project,null,2));let index={versions:[]};try{index=JSON.parse(await fsp.readFile(versionIndexFile(id),'utf8'));}catch{}index.versions.unshift(record);await writeAtomic(versionIndexFile(id),JSON.stringify(index,null,2));return sendJson(res,200,record);
       });
     }
     if(versionMatch&&req.method==='DELETE'&&versionMatch[2]){

@@ -8,12 +8,15 @@ test('prototype click, mouse-enter and double-click triggers execute their saved
     {dataset:{formaPrototype:JSON.stringify({trigger:'mouseenter',action:'message',target:'Hover works'})}},
     {dataset:{formaPrototype:JSON.stringify({trigger:'dblclick',action:'open-url',target:'https://example.com'})}},
     {dataset:{formaPrototype:JSON.stringify({trigger:'click',action:'submit-email',target:'newsletter-email'})}},
+    {dataset:{formaPrototype:JSON.stringify({trigger:'click',enabled:false,action:'message',target:'must stay disabled'})}},
   ];
   const listeners={},opened=[],variables={textContent:'{"saved":false}'},toast={dataset:{},style:{},hidden:true,setAttribute(){}},input={value:'',type:'email',checkValidity:()=>true,focus(){}};
   for(const element of elements){element.style={};element.attributes={};element.classList={toggle(){}};element.addEventListener=(name,handler)=>{listeners[name]=listeners[name]||[];listeners[name].push(handler);};element.setAttribute=(name,value)=>{element.attributes[name]=value;};}
   const document={body:{dataset:{},append(){}},documentElement:{style:{setProperty(){}}},querySelector(selector){if(selector==='#forma-variable-data')return variables;if(selector==='[data-forma-preview-toast]')return toast;return null;},querySelectorAll(selector){if(selector==='[data-forma-prototype]')return elements;return [];},addEventListener(){},createElement(){return toast;},getElementById(id){return id==='newsletter-email'?input:null;}};
   const window={dispatchEvent(){},open(...args){opened.push(args);}},location={href:'https://forma.local/'};
   new Function('document','window','location','CustomEvent','setTimeout','clearTimeout',source)(document,window,location,class CustomEvent{constructor(type,options){this.type=type;this.detail=options?.detail;}},()=>1,()=>{});
+  assert.equal(listeners.click.length,2,'disabled imported prototype records do not attach click handlers');
+  assert.equal(elements[4].style.cursor,undefined,'disabled imported prototype records do not look interactive');
   listeners.click[0]({target:{closest(){return elements[0];}},currentTarget:elements[0],preventDefault(){}});
   listeners.mouseenter[0]({target:{closest(){return elements[1];}},currentTarget:elements[1]});
   listeners.dblclick[0]({target:{closest(){return elements[2];}},currentTarget:elements[2]});

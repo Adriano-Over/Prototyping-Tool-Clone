@@ -39,7 +39,7 @@ export function graphToProject(graph){
   });
   if(!pages.length)throw Error('A shared design needs at least one page.');
   const styles=graph.rules.legacy?.raw||graph.ruleOrder.filter(key=>graph.rules[key]).map(key=>clone(graph.rules[key]));
-  return {format:'forma-project',schemaVersion:2,id:'',name:graph.meta.name,createdAt:graph.meta.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString(),editor:{grapesjs:{...clone(graph.editor),pages,styles}},forma:clone(graph.meta.forma),assets:graph.assetOrder.filter(id=>graph.assets[id]).map(id=>clone(graph.assets[id]))};
+  return {format:'forma-project',schemaVersion:3,id:'',name:graph.meta.name,createdAt:graph.meta.createdAt||new Date().toISOString(),updatedAt:new Date().toISOString(),editor:{grapesjs:{...clone(graph.editor),pages,styles}},forma:clone(graph.meta.forma),assets:graph.assetOrder.filter(id=>graph.assets[id]).map(id=>clone(graph.assets[id]))};
 }
 const sequences=new Set(['children','pageOrder','ruleOrder','assetOrder']);
 export function diffGraphs(before,after,path=[]){

@@ -1,5 +1,5 @@
 export const FORMA_PROJECT_FORMAT = 'forma-project';
-export const FORMA_SCHEMA_VERSION = 2;
+export const FORMA_SCHEMA_VERSION = 3;
 
 export const DEFAULT_VARIABLES = Object.freeze({
   mode: 'light',
@@ -22,6 +22,8 @@ export function emptyFormaState() {
     comments: {},
     prototype: {},
     layoutMetadata: {},
+    scene: null,
+    importSources: [],
   };
 }
 
@@ -34,6 +36,8 @@ function normalizeForma(value = {}) {
     comments: value.comments && typeof value.comments === 'object' ? copy(value.comments) : defaults.comments,
     prototype: value.prototype && typeof value.prototype === 'object' ? Object.fromEntries(Object.entries(copy(value.prototype)).map(([id, interactions]) => [id, normalizeInteractions(interactions)])) : defaults.prototype,
     layoutMetadata: value.layoutMetadata && typeof value.layoutMetadata === 'object' ? copy(value.layoutMetadata) : defaults.layoutMetadata,
+    scene: value.scene && typeof value.scene === 'object' && !Array.isArray(value.scene) ? copy(value.scene) : defaults.scene,
+    importSources: Array.isArray(value.importSources) ? copy(value.importSources) : defaults.importSources,
   };
 }
 

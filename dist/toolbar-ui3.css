@@ -1,0 +1,11 @@
+/* Figma UI3 toolbar proportions, applied to Forma's existing functional controls. */
+.tool-dock{gap:2px;padding:6px 8px;min-height:52px;border-radius:16px;border:1px solid #e5e7e7;box-shadow:0 4px 14px #17251d18,0 1px 3px #17251d10}
+.tool-dock .tool-group-main{width:32px;height:32px;border-radius:6px;color:#1e1e1e}
+.tool-dock .tool-group-main.active,.tool-dock .tool-group-main[aria-pressed=true]{background:#0d99ff;color:#fff}
+.tool-dock .tool-group-menu{width:16px;height:32px;color:#1e1e1e}
+.tool-dock .dock-divider{margin:0 4px}
+.tool-dock .tool-mode-switch{display:flex;align-items:center;background:#f3f4f4;border:0;margin-left:6px;padding:4px;border-radius:12px;gap:2px}
+.tool-dock .tool-mode-switch button{width:32px;height:32px;border-radius:6px;color:#66706a}
+.tool-dock .tool-mode-switch button.active{background:#fff;color:#1688f2;box-shadow:0 1px 3px #17251d1a,inset 0 0 0 1px #dbe9f7}
+.tool-dock .tool-group-main svg{width:16px;height:16px}
+@media(max-width:900px){.tool-dock .tool-mode-switch{display:none}}

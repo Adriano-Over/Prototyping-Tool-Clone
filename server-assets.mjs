@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const extensions={'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif','image/svg+xml':'svg'};
+const extensions={'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif','image/svg+xml':'svg','application/vnd.forma.fig-source+gzip':'figsrc.gz'};
 const clone=value=>JSON.parse(JSON.stringify(value));
 const referencePattern=/(?<![\w:/.])(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?)?\/api\/projects\/([a-z0-9-]+)\/assets\/(asset_[a-f0-9]{20})(?![\w-])/g;
 function strings(value, visit) {
@@ -14,11 +14,12 @@ function strings(value, visit) {
 function replace(value, replacements) {
   return strings(value,text=>{for(const [from,to] of replacements)text=text.split(from).join(to);return text;});
 }
-function decodeImage(source) {
-  const match=source.match(/^data:(image\/[a-z+]+)(;base64)?,(.*)$/s);
+function decodeAsset(source) {
+  const match=source.match(/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)(;base64)?,(.*)$/s);
   if(!match||!extensions[match[1]])throw new Error('Unsupported embedded image');
   const bytes=match[2]?Buffer.from(match[3],'base64'):Buffer.from(decodeURIComponent(match[3]));
-  if(bytes.length>25*1024*1024)throw new Error('Image must be 25 MB or smaller');
+  const limit=match[1]==='application/vnd.forma.fig-source+gzip'?24*1024*1024:25*1024*1024;
+  if(bytes.length>limit)throw new Error(`Project assets must be ${Math.floor(limit/1024/1024)} MB or smaller`);
   const sha256=crypto.createHash('sha256').update(bytes).digest('hex');
   return {bytes,mime:match[1],sha256,id:'asset_'+sha256.slice(0,20),ext:extensions[match[1]]};
 }
@@ -28,12 +29,13 @@ export function createAssetService({projectsRoot,writeAtomic}) {
     const root=await fs.realpath(projectsRoot);
     const directory=await fs.realpath(path.join(root,projectId,'assets'));
     if(!directory.startsWith(root+path.sep))throw new Error('Invalid asset directory');
-    const name=(await fs.readdir(directory)).find(name=>new RegExp(`^${assetId}\\.(png|jpg|webp|gif|svg)$`).test(name));
-    if(!name)throw new Error(`Missing image ${assetId}. Restore the source project or its backup.`);
+    const name=(await fs.readdir(directory)).find(name=>new RegExp(`^${assetId}\\.(png|jpg|webp|gif|svg|figsrc\\.gz)$`).test(name));
+    if(!name)throw new Error(`Missing asset ${assetId}. Restore the source project or its backup.`);
     const file=await fs.realpath(path.join(directory,name));
     if(!file.startsWith(directory+path.sep))throw new Error('Invalid asset path');
-    const mime=Object.keys(extensions).find(key=>extensions[key]===path.extname(file).slice(1));
-    const stat=await fs.stat(file);if(stat.size>25*1024*1024)throw new Error('Image must be 25 MB or smaller');
+    const suffix=name.slice(assetId.length+1);
+    const mime=Object.keys(extensions).find(key=>extensions[key]===suffix);
+    const stat=await fs.stat(file);if(stat.size>(mime==='application/vnd.forma.fig-source+gzip'?24:25)*1024*1024)throw new Error('Project asset exceeds its size limit');
     return `data:${mime};base64,${(await fs.readFile(file)).toString('base64')}`;
   }
   async function portable(input,projectId=input?.id||input?.project?.id) {
@@ -51,17 +53,17 @@ export function createAssetService({projectsRoot,writeAtomic}) {
   async function materialize(input,id) {
     let value=clone(input);const replacements=new Map(),sources=new Set();
     strings(value,text=>{
-      if(text.startsWith('data:image/'))sources.add(text);
-      else for(const match of text.matchAll(/data:image\/(?:png|jpeg|webp|gif|svg\+xml)(?:;base64)?,[^\s"'<>)]*/g))sources.add(match[0]);
+      if(text.startsWith('data:image/')||text.startsWith('data:application/vnd.forma.fig-source+gzip;'))sources.add(text);
+      else for(const match of text.matchAll(/data:(?:image\/(?:png|jpeg|webp|gif|svg\+xml)|application\/vnd\.forma\.fig-source\+gzip)(?:;base64)?,[^\s"'<>)]*/g))sources.add(match[0]);
       return text;
     });
     const assets=new Map((value.assets||[]).map(asset=>[asset.id,asset]));
     for(const source of sources){
-      const image=decodeImage(source),relativePath=`assets/${image.id}.${image.ext}`;
-      await writeAtomic(path.join(projectsRoot,id,relativePath),image.bytes);
-      const previous=[...assets.values()].find(asset=>asset.dataUrl===source)||assets.get(image.id)||{};
-      assets.set(image.id,{...previous,id:image.id,relativePath,mime:image.mime,sha256:image.sha256,bytes:image.bytes.length});
-      replacements.set(source,`/api/projects/${id}/assets/${image.id}`);
+      const asset=decodeAsset(source),relativePath=`assets/${asset.id}.${asset.ext}`;
+      await writeAtomic(path.join(projectsRoot,id,relativePath),asset.bytes);
+      const previous=[...assets.values()].find(item=>item.dataUrl===source)||assets.get(asset.id)||{};
+      assets.set(asset.id,{...previous,id:asset.id,relativePath,mime:asset.mime,sha256:asset.sha256,bytes:asset.bytes.length});
+      replacements.set(source,`/api/projects/${id}/assets/${asset.id}`);
     }
     value=replace(value,replacements);
     value.assets=[...assets.values()].map(({dataUrl,...asset})=>asset);

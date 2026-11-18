@@ -2,7 +2,7 @@ export function normalizeInteractions(value) {
   const items = Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
   return items.filter(item => item && typeof item === 'object').map((item, index) => {
     const actions = Array.isArray(item.actions) ? item.actions : item.action ? [Object.fromEntries(['action','target','variable','value'].filter(key => item[key] !== undefined).map(key => [key, item[key]]))] : [];
-    return { ...item, id: item.id || `interaction-${index + 1}`, trigger: item.trigger || 'click', actions: actions.map(action => ({ ...action })), ...(actions[0] ? actions[0] : {}) };
+    return { ...(actions[0] || {}), ...item, id: item.id || `interaction-${index + 1}`, trigger: item.trigger || 'click', actions: actions.map(action => ({ ...action })) };
   });
 }
 

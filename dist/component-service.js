@@ -84,16 +84,18 @@ export function createComponentService(api) {
   }
   function refreshInstance(node,definition,{reset=false,variant}={}){
     const relation=node.get('formaInstance');if(!relation)return;
-    const before=snapshotComponent(node);let overrides=reset?{}:collectOverrides(before,relation.baseline);
+    let renderNode=node;
+    if(relation.renderedPartKey){renderNode=null;walk(node,item=>{if(item.get('formaPartKey')===relation.renderedPartKey)renderNode=item;});if(!renderNode)throw Error('The linked component content could not be found in this instance.');}
+    const before=snapshotComponent(renderNode);let overrides=reset?{}:collectOverrides(before,relation.baseline);
     variant=variant||relation.variant||definition.defaultVariant||'Default';
     const base=definitionData(definition,variant);if(!base)throw Error('Variant not found.');
     if(relation.definitionId!==definition.id){const old=indexTree(relation.baseline),next=indexTree(base),mapped={};for(const [key,patch] of Object.entries(overrides)){const name=old.get(key)?.name,target=[...next.values()].find(item=>item.name===name);if(target)mapped[target.formaPartKey]=patch;}overrides=mapped;}
     const position=Object.fromEntries(Object.entries(before.style).filter(([key])=>placement.has(key)));
-    const baseline=materialize(base,node,position),updated=materialize(applyOverrides(base,overrides),node,position);
+    const baseline=materialize(base,renderNode,position),updated=materialize(applyOverrides(base,overrides),renderNode,position);
     const baselineSnapshot=copy(baseline);const strip=data=>{delete data.formaNodeId;delete data.attributes.id;data.components.forEach(strip);};strip(baselineSnapshot);
-    const nextRelation={definitionId:definition.id,variant,baseline:baselineSnapshot,overrides};
+    const nextRelation={...relation,definitionId:definition.id,variant,baseline:baselineSnapshot,overrides,...(relation.renderedPartKey?{renderedPartKey:updated.formaPartKey}:{})};
     if(same(before,snapshotData(updated))&&same(relation,nextRelation))return;
-    const selectedId=api.selected?.get('formaNodeId');write(node,updated);node.set('formaInstance',nextRelation);
+    const selectedId=api.selected?.get('formaNodeId');write(renderNode,updated);node.set('formaInstance',nextRelation);
     if(selectedId){const target=all().find(item=>item.get('formaNodeId')===selectedId);if(target)editor.select(target);else editor.select(node);}
   }
   function snapshotData(data){const result=copy(data);const strip=node=>{delete node.formaNodeId;delete node.attributes.id;node.components.forEach(strip);};strip(result);return result;}

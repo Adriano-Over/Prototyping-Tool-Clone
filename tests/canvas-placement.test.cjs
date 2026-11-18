@@ -31,13 +31,38 @@ test('canvas pointer coordinates stay iframe-local without applying canvas zoom 
 test('canvas wrapper matches the frame bounds without one-sided padding', async () => {
   const { canvasWrapperExtent } = await import('../dist/canvas-placement.js');
   assert.deepEqual(canvasWrapperExtent({ left: 88, top: 72 }, { width: 1440, height: 5100 }), {
-    width: 1528,
-    height: 5172,
+    width: 1616,
+    height: 5244,
   });
   assert.deepEqual(canvasWrapperExtent({ left: 0, top: 0 }, { width: 600, height: 400 }), {
     width: 600,
     height: 400,
   });
+  assert.deepEqual(canvasWrapperExtent({ left: 170, top: 95 }, { width: 1040, height: 720 }), {
+    width: 1380,
+    height: 910,
+  });
+});
+
+test('canvas content extent grows to include responsive frame bounds without shrinking the saved page', async () => {
+  const { canvasContentExtent, canvasWrapperExtent } = await import('../dist/canvas-placement.js');
+  assert.deepEqual(canvasContentExtent({ width: 1128, height: 792 }, [
+    { left: 88, top: 48, width: 46, height: 16 },
+    { left: 170, top: 95, width: 1040, height: 720 },
+  ]), { width: 1210, height: 815 });
+  assert.deepEqual(canvasContentExtent({ width: 1400, height: 1100 }, [
+    { left: 0, top: 0, width: 640, height: 480 },
+  ]), { width: 1400, height: 1100 });
+  assert.deepEqual(canvasContentExtent({ width: '1128px', height: '792px' }, [
+    { left: '170px', top: '95px', width: '1040px', height: '720px' },
+  ]), { width: 1210, height: 815 });
+  const symmetricFrame = canvasWrapperExtent(
+    { left: Number.parseFloat('170px'), top: Number.parseFloat('95px') },
+    { width: Number.parseFloat('1040px'), height: Number.parseFloat('720px') },
+  );
+  assert.deepEqual(canvasContentExtent(symmetricFrame, [
+    { left: '170px', top: '95px', width: '1040px', height: '720px' },
+  ]), { width: 1380, height: 910 });
 });
 
 test('linear and radial fills are generated from validated six-digit colors', async () => {

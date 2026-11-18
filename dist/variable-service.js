@@ -1,6 +1,8 @@
 const copy=value=>structuredClone(value);
 export const cssVariableName=name=>'--forma-v-'+Array.from(name).map(char=>char.codePointAt(0).toString(16)).join('-');
 const unitless=new Set(['opacity','z-index','font-weight','flex-grow','flex-shrink','order','line-height']);
+const xmlAttribute=value=>String(value).replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+const svgDataUrl=svg=>{const bytes=new TextEncoder().encode(svg);let binary='';for(let offset=0;offset<bytes.length;offset+=0x8000)binary+=String.fromCharCode(...bytes.subarray(offset,offset+0x8000));return `data:image/svg+xml;base64,${btoa(binary)}`;};
 export function variableNames(state){return [...new Set([...Object.keys(state.definitions||{}),...Object.values(state.modes||{}).flatMap(mode=>Object.keys(mode))])];}
 export function resolveVariable(state,name,overrides={},seen=new Set()){
   if(seen.has(name))throw Error(`Variable alias cycle: ${[...seen,name].join(' → ')}`);seen=new Set([...seen,name]);
@@ -36,6 +38,13 @@ export function createVariableService(api){
       });
       each(node=>{
         const modes=effectiveModes(node),bindings=node.get('formaBindings')||{},previous=node.get('formaBindingValues')||{},last={};
+        const vectorTemplate=node.get('formaVectorTemplate');
+        if(vectorTemplate?.svg&&Array.isArray(vectorTemplate.variables)){
+          let svg=vectorTemplate.svg;
+          for(const binding of vectorTemplate.variables){const token=String(binding.token||'');if(!token)continue;const value=resolveVariable(state,binding.id,modes);svg=svg.replaceAll(token,xmlAttribute(value));}
+          const src=svgDataUrl(svg),attributes=node.getAttributes?.()||{};
+          if(attributes.src!==src){if(node.addAttributes)node.addAttributes({src});else if(node.setAttributes)node.setAttributes({...attributes,src});}
+        }
         if(Object.keys(node.get('formaVariableModes')||{}).length){const local=Object.fromEntries(names.map(name=>[cssVariableName(name),String(resolveVariable(state,name,modes))]));const style=node.getStyle();if(Object.entries(local).some(([key,value])=>style[key]!==value))node.addStyle(local);}
         for(const [property,name] of Object.entries(bindings)){
           const value=resolveVariable(state,name,modes);last[property]=value;
