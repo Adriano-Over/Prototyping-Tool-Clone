@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node server.mjs",
     "dev": "node server.mjs",
+    "test": "node --test tests/*.test.cjs",
+    "lint": "node scripts/check-syntax.mjs",
     "check": "node --check dist/api-client.js && node --check dist/document-history.js && node --check server-assets.mjs && node --check render-service.mjs && node --check workspace-service.mjs && node --check dist/app.js && node --check dist/canvas-placement.js && node --check dist/mask-model.js && node --check dist/text-editing.js && node --check dist/preview-runtime.js && node --check dist/dialog-service.js && node --check dist/workbench.js && node --check dist/project-model.js && node --check dist/project-state.js && node --check dist/stable-ids.js && node --check dist/project-store.js && node --check dist/command-service.js && node --check dist/asset-manager.js && node --check dist/style-resolver.js && node --check dist/node-behavior.js && node --check dist/tool-state.js && node --check dist/fidelity.js && node --check dist/zoom-controller.js && node --check dist/component-service.js && node --check dist/variable-service.js && node --check dist/layout-service.js && node --check dist/design-system-panel.js && node --check dist/layout-panel.js && node --check dist/design-export.js && node --check dist/collaboration-model.js && node --check dist/workspace-client.js && node --check server.mjs && node --test tests/*.test.cjs",
     "check:tutorial": "node --check dist/text-style-service.js && node --check dist/text-style-panel.js && node --check dist/image-fit-model.js && node --check dist/fidelity.js && node --check dist/workbench.js && node --test tests/tutorial-workflow.test.cjs tests/text-style-service.test.cjs",
     "desktop:build": "powershell -ExecutionPolicy Bypass -File desktop/build.ps1",
