@@ -323,6 +323,42 @@ test('Figma FIT and TILE image fills retain their distinct behavior', async () =
   assert.match(tile['background-image'], /data:image\/png;base64,iVBORw0KGgo=/);
 });
 
+test('Figma linear gradient fills follow the saved transform in regular and stacked paints', async () => {
+  const { importParsedFigDocument, paintStackCss } = await import('../fig-import.mjs');
+  const page = { guid: guid(60), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
+  const gradient = {
+    type: 'GRADIENT_LINEAR', opacity: 1, visible: true,
+    stops: [
+      { color: { r: 1, g: 0, b: 0, a: 1 }, position: 0 },
+      { color: { r: 0, g: 0, b: 1, a: 1 }, position: 1 },
+    ],
+  };
+  const horizontal = {
+    guid: guid(61), type: 'RECTANGLE', name: 'Horizontal gradient', phase: 'CREATED',
+    size: { x: 100, y: 50 }, transform: { m00: 1, m01: 0, m02: 0, m10: 0, m11: 1, m12: 0 },
+    fillPaints: [{ ...gradient, transform: { m00: 1, m01: 0, m02: 0, m10: 0, m11: 1, m12: 0 } }],
+  };
+  const project = importParsedFigDocument({
+    nodes: [page, horizontal], childrenMap: new Map([[id(60), [horizontal]]]),
+    images: new Map(), meta: {}, header: { version: 101 },
+  });
+  const imported = project.editor.grapesjs.pages[0].frames[0].component.components[0];
+  assert.match(imported.style['background-image'], /^linear-gradient\(90deg,/);
+
+  const vertical = paintStackCss([{
+    ...gradient,
+    transform: { m00: 0, m01: 1, m02: 0, m10: -1, m11: 0, m12: 1 },
+  }], new Map(), [], { x: 56, y: 112 });
+  assert.match(vertical['background-image'], /^linear-gradient\(180deg,/);
+
+  const rootHalf = Math.SQRT1_2 / 2;
+  const diagonal = paintStackCss([{
+    ...gradient,
+    transform: { m00: Math.SQRT1_2, m01: Math.SQRT1_2, m02: 0, m10: -Math.SQRT1_2, m11: Math.SQRT1_2, m12: rootHalf },
+  }], new Map(), [], { x: 100, y: 100 });
+  assert.match(diagonal['background-image'], /^linear-gradient\(135deg,/);
+});
+
 test('Figma image rotation, crop transforms, and tile scaling are applied', async () => {
   const { paintStackCss } = await import('../fig-import.mjs');
   const images = new Map([['0102', { dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }]]);

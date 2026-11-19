@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { parseFig, nodeId, resolveVectorNodePaths } from 'openfig-core';
+import { parseFig, nodeId, resolveGradientGeometry, resolveVectorNodePaths } from 'openfig-core';
 import { createSourceDocumentBundle, sourceOccurrenceKey, stableImportedNodeId } from './fig-import-source.mjs';
 import { buildFigResourceIndex, figResourceManifest } from './fig-import-resource-index.mjs';
 import { figVariablesToFormaState, normalizeFigVariables } from './fig-import-variables.mjs';
@@ -50,7 +50,25 @@ function transformedNodeBounds(node) {
   };
 }
 
-function paintCss(paints, images, imageFills, variableColor = null) {
+function linearGradientCss(paint, stops, size = {}) {
+  const geometry = resolveGradientGeometry(
+    { type: 'linear', transform: paint.transform },
+    Number(size.x || 0), Number(size.y || 0),
+  );
+  let degrees = 135;
+  if (geometry?.type === 'linear') {
+    const dx = geometry.end.x - geometry.start.x;
+    const dy = geometry.end.y - geometry.start.y;
+    if (Number.isFinite(dx) && Number.isFinite(dy) && Math.hypot(dx, dy) > 1e-9) {
+      degrees = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+      if (degrees > 359.99995) degrees = 0;
+      degrees = Number(degrees.toFixed(4));
+    }
+  }
+  return `linear-gradient(${degrees}deg, ${stops})`;
+}
+
+function paintCss(paints, images, imageFills, size = {}, variableColor = null) {
   const visible = (paints || []).filter(paint => paint?.visible !== false && Number(paint?.opacity ?? 1) > 0);
   const paint = visible[0];
   if (!paint) return null;
@@ -64,8 +82,10 @@ function paintCss(paints, images, imageFills, variableColor = null) {
   }
   if (['GRADIENT_LINEAR', 'GRADIENT_RADIAL', 'GRADIENT_ANGULAR', 'GRADIENT_DIAMOND'].includes(paint.type) && paint.stops?.length) {
     const stops = paint.stops.map((stop, index) => `${variableColor?.(paint.stopsVar?.[index], colorWithOpacity(stop.color, paint.opacity), paint.opacity) || colorWithOpacity(stop.color, paint.opacity)} ${Math.max(0, Math.min(1, Number(stop.position))) * 100}%`).join(', ');
-    const direction = paint.type === 'GRADIENT_LINEAR' ? '135deg' : 'circle';
-    return { gradient: paint.type === 'GRADIENT_LINEAR' ? `linear-gradient(${direction}, ${stops})` : `radial-gradient(${stops})`, opacity: Number(paint.opacity ?? 1) };
+    const gradient = paint.type === 'GRADIENT_LINEAR'
+      ? linearGradientCss(paint, stops, size)
+      : `radial-gradient(${stops})`;
+    return { gradient, opacity: Number(paint.opacity ?? 1) };
   }
   return null;
 }
@@ -136,7 +156,9 @@ export function paintStackCss(paints, images, imageFills = [], size = {}, variab
       layers.push({ image: `linear-gradient(${color}, ${color})`, size: '100% 100%', position: 'center center', repeat: 'no-repeat' });
     } else if (['GRADIENT_LINEAR', 'GRADIENT_RADIAL', 'GRADIENT_ANGULAR', 'GRADIENT_DIAMOND'].includes(paint.type) && paint.stops?.length) {
       const stops = paint.stops.map((stop, index) => `${variableColor?.(paint.stopsVar?.[index], colorWithOpacity(stop.color, paint.opacity), paint.opacity) || colorWithOpacity(stop.color, paint.opacity)} ${Math.max(0, Math.min(1, Number(stop.position))) * 100}%`).join(', ');
-      const gradient = paint.type === 'GRADIENT_LINEAR' ? `linear-gradient(135deg, ${stops})` : `radial-gradient(${stops})`;
+      const gradient = paint.type === 'GRADIENT_LINEAR'
+        ? linearGradientCss(paint, stops, size)
+        : `radial-gradient(${stops})`;
       layers.push({ image: gradient, size: '100% 100%', position: 'center center', repeat: 'no-repeat' });
     }
   }
@@ -490,7 +512,7 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
 
     const imageFills = [];
     const hasImageFill = type !== 'TEXT' && (node.fillPaints || []).some(paint => paint?.type === 'IMAGE' && paint.visible !== false);
-    const fill = hasImageFill ? null : paintCss(node.fillPaints, images, imageFills, resolvePaintVariable);
+    const fill = hasImageFill ? null : paintCss(node.fillPaints, images, imageFills, node.size, resolvePaintVariable);
     if (hasImageFill) Object.assign(style, paintStackCss(node.fillPaints, images, imageFills, node.size, resolvePaintVariable) || {});
     if (fill?.color) style[type === 'TEXT' ? 'color' : 'background-color'] = fill.color;
     if (fill?.gradient) style['background-image'] = fill.gradient;
@@ -503,7 +525,7 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     if (fill?.opacity < 1) style['background-blend-mode'] = 'normal';
     const shadows = (node.effects || []).filter(effect => effect?.visible !== false && ['DROP_SHADOW', 'INNER_SHADOW'].includes(effect.type)).map(effect => `${effect.type === 'INNER_SHADOW' ? 'inset ' : ''}${Number(effect.offset?.x || 0)}px ${Number(effect.offset?.y || 0)}px ${Math.max(0, Number(effect.radius || 0))}px ${Number(effect.spread || 0)}px ${colorCss(effect.color) || 'rgba(0,0,0,.25)'}`);
     const strokePaints = (node.strokePaints || []).filter(paint => paint?.visible !== false && Number(paint?.opacity ?? 1) > 0);
-    const stroke = ['VECTOR', 'BOOLEAN_OPERATION', 'REGULAR_POLYGON'].includes(type) ? null : paintCss(strokePaints, images, [], resolvePaintVariable);
+    const stroke = ['VECTOR', 'BOOLEAN_OPERATION', 'REGULAR_POLYGON'].includes(type) ? null : paintCss(strokePaints, images, [], node.size, resolvePaintVariable);
     let vectorPaint = null;
     let paintOutset = 0;
     if (stroke?.color && Number(node.strokeWeight) > 0) {
