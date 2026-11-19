@@ -192,24 +192,72 @@ impl LegacyProject {
                 .filter(|v| !v.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("page-{index}"));
-            let component = if let Some(frames) = page.get("frames") {
+            let mut nodes = BTreeMap::new();
+            let root = if let Some(frames) = page.get("frames") {
                 let frames = frames.as_array().ok_or_else(|| {
                     LegacyConversionError(format!("page {page_id}: frames must be an array"))
                 })?;
-                if frames.len() != 1 {
+                if frames.is_empty() {
                     return Err(LegacyConversionError(format!(
-                        "page {page_id}: exactly one frame is supported"
+                        "page {page_id}: at least one frame is required"
                     )));
                 }
-                frames[0].get("component")
+                if frames.len() == 1 {
+                    let component = frames[0].get("component").ok_or_else(|| {
+                        LegacyConversionError(format!("page {page_id}: missing root component"))
+                    })?;
+                    convert_node(component, &format!("{index}"), &mut nodes, &mut warnings, 0)?
+                } else {
+                    let mut children = Vec::new();
+                    for (frame_index, frame) in frames.iter().enumerate() {
+                        let component = frame.get("component").ok_or_else(|| {
+                            LegacyConversionError(format!(
+                                "page {page_id}: frame {frame_index} missing root component"
+                            ))
+                        })?;
+                        children.push(convert_node(
+                            component,
+                            &format!("{index}-frame-{frame_index}"),
+                            &mut nodes,
+                            &mut warnings,
+                            0,
+                        )?);
+                    }
+                    let root_id = format!("legacy-{index}-frames-root");
+                    if nodes.contains_key(&root_id) {
+                        return Err(LegacyConversionError(format!(
+                            "page {page_id}: generated root ID collides with source node {root_id}"
+                        )));
+                    }
+                    nodes.insert(
+                        root_id.clone(),
+                        Node {
+                            name: "Page frame container".into(),
+                            kind: NodeKind::Group,
+                            transform: Affine::default(),
+                            size: Size {
+                                width: 0.0,
+                                height: 0.0,
+                                extras: BTreeMap::new(),
+                            },
+                            visible: true,
+                            locked: false,
+                            children,
+                            extras: BTreeMap::from([(
+                                "synthetic_frame_container".into(),
+                                json!(true),
+                            )]),
+                        },
+                    );
+                    warnings.push(format!("page {page_id}: multiple frames use a synthetic zero-sized root; frame metadata needs further conversion"));
+                    root_id
+                }
             } else {
-                page.get("component")
+                let component = page.get("component").ok_or_else(|| {
+                    LegacyConversionError(format!("page {page_id}: missing root component"))
+                })?;
+                convert_node(component, &format!("{index}"), &mut nodes, &mut warnings, 0)?
             };
-            let component = component.ok_or_else(|| {
-                LegacyConversionError(format!("page {page_id}: missing root component"))
-            })?;
-            let mut nodes = BTreeMap::new();
-            let root = convert_node(component, &format!("{index}"), &mut nodes, &mut warnings, 0)?;
             converted.push(Page {
                 id: page_id.clone(),
                 name: page
@@ -287,5 +335,56 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unsupported width"));
+    }
+
+    #[test]
+    fn projects_multiple_frames_in_order_and_retains_source() {
+        let source = json!({"id":"design","pages":[{"id":"page","frames":[
+            {"component":{"formaNodeId":"first","name":"First","type":"wrapper","style":{"width":"100px","height":"80px"}}},
+            {"component":{"formaNodeId":"second","name":"Second","type":"wrapper","style":{"left":"120px","width":"60px","height":"40px"}}}
+        ]}]});
+        let report = LegacyProject::from_json(source.clone())
+            .unwrap()
+            .project_simple_pages("fallback")
+            .unwrap();
+        let page = &report.project.pages[0];
+        assert_eq!(page.nodes[&page.root].children, ["first", "second"]);
+        assert_eq!(page.nodes["second"].transform.e, 120.0);
+        assert_eq!(
+            page.nodes[&page.root].extras["synthetic_frame_container"],
+            true
+        );
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.contains("synthetic zero-sized root")));
+        assert_eq!(report.project.legacy, Some(source));
+        assert!(report.project.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_frames_missing_components_and_generated_id_collisions() {
+        let base = json!({"pages":[{"id":"page","frames":[]}]});
+        assert!(LegacyProject::from_json(base)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap_err()
+            .to_string()
+            .contains("at least one frame"));
+        let missing =
+            json!({"pages":[{"id":"page","frames":[{"component":{"type":"wrapper"}},{}]}]});
+        assert!(LegacyProject::from_json(missing)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap_err()
+            .to_string()
+            .contains("frame 1 missing"));
+        let collision = json!({"pages":[{"id":"page","frames":[{"component":{"type":"wrapper","formaNodeId":"legacy-0-frames-root"}},{"component":{"type":"wrapper"}}]}]});
+        assert!(LegacyProject::from_json(collision)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap_err()
+            .to_string()
+            .contains("collides"));
     }
 }
