@@ -2,14 +2,14 @@
 
 The supplied Figma tools guide describes a full product platform. Forma now implements a focused desktop design editor foundation and tracks the remaining platform work explicitly.
 
-## Phase 0 baseline and hygiene — 2026-11-18
+## Project baseline and verification — 2026-11-19
 
 - The editor bundles Inter, Oswald, Happy Monkey, and Roboto Mono for offline use in the canvas, preview, and design exports. Authored prototype links can still open their configured destinations.
 - `npm start`, `npm test`, and `npm run lint` are available. The syntax check covers project and test JavaScript while excluding vendored GrapesJS.
 - `dist/` is the checked-in frontend source served directly by the local server; the project has no frontend bundler/build output step.
 - Repository screenshots live under `docs/screenshots/`. Local workspace account data is ignored by Git alongside designs, exports, dependencies, and native build outputs.
 - The existing Windows executable, WebView2 loader, and release archive remain on this computer but are no longer tracked as source repository files.
-- Baseline: `npm install` completed with 5 packages audited and 0 reported vulnerabilities; `npm run check` passed 126 tests before changes. After the offline-font test was added, the full suite passed 127/127 repeatedly; `npm run lint` checked 89 project and test files. The local server returned HTTP 200 for the editor and issued a session token.
+- Current check: `npm run check` passed 146 tests and `npm run lint` passed syntax checks for 98 project and test files. These automated checks do not constitute a full live comparison with Figma.
 
 ## Working editor capabilities
 
@@ -22,6 +22,7 @@ The supplied Figma tools guide describes a full product platform. Forma now impl
 - Auto layout controls based on flex layout, wrapping, gap, padding, and alignment
 - Column layout grids
 - Multiple pages and canvas zoom/pan
+- Figma `.fig` import maps supported node blend modes to CSS and reports unsupported modes, preserves visible stacked paints on ordinary layers, and creates SVG linear/radial gradients for vector paths. Per-corner radius arrays and legacy corner fields are also imported.
 - Continuous 1–25,600% canvas zoom with pointer-anchored wheel zoom, pinch zoom, geometric 1.5× zoom controls, typed percentages, fit-page/fit-selection shortcuts, and screen-space panning
 - Linked reusable components with main/instance editing, overrides, exposed properties, variants, swapping, reset, and detach
 - Variable collections with multiple modes, typed aliases, cycle checks, per-layer mode overrides, and bindings to layout, sizing, typography, fill, and border fields
@@ -57,7 +58,8 @@ The workspace service runs on the same machine as Forma and stores accounts, col
 - Pen creates paths with successive canvas clicks, closes by clicking the first anchor, and finishes with Enter or double-click; click-drag anchors create editable Bézier handles. Double-clicking existing anchors adds smooth handles, midpoint anchors can be inserted, and right-click removes anchors while preserving at least two points. The Actions menu supports pixel-grid snap. Pencil pressure sensitivity and editable Text-on-path curves remain incomplete. Scale mode still resizes one selected layer by pointer drag and does not preserve multi-selection transforms or provide Figma's full scale workflow.
 - Frames, Sections, and Slices now carry distinct region metadata; exporting a selected Slice crops the current page to that slice's bounds. Full section organization, per-slice export settings/batch behavior, and Figma-compatible region metadata remain incomplete. Frame presets and image/video placement provide the core workflows but do not reproduce Figma's full platform/device catalog, media crop interface, or drag-and-drop placement preview.
 - The Actions palette routes local editor commands and resource panels, including selection, rulers, grid snapping, UI visibility, nudge distance, and keyboard shortcuts. Plugins/widgets remain discovery-only because Forma does not have an isolated extension runtime or marketplace connection. The navigation rail's Agents entry opens local creation tools; it does not provide Figma's hosted AI agent service. Draw/Design/Motion/Dev modes select tool behavior and open existing panels, but their complete Figma-specific workspaces are not equivalent.
-- The eyedropper uses the browser EyeDropper API where available. Gradient stops now support add/remove, color, position, and CSS direction editing. Image layers and image fills now expose fit/crop position controls. Blend modes and text case/letter spacing are CSS-backed controls, not a native Figma style/fill model. On-canvas gradient handles, a complete editable fill stack, true shape-to-image fills/masks, and Figma's full image replacement/crop workflow remain incomplete.
+- The eyedropper uses the browser EyeDropper API where available. Gradient stops support add/remove, color, position, and CSS direction editing. Image layers and image fills expose fit/crop position controls. Blend modes and text case/letter spacing are CSS-backed controls, not a native Figma style/fill model. Imported visible paint stacks are rendered in order, but Forma does not yet expose a complete editable fill-stack inspector. On-canvas gradient handles, true shape-to-image fills/masks, and Figma's full image replacement/crop workflow remain incomplete.
+- Import blend-mode support covers CSS `mix-blend-mode` values. `PASS_THROUGH` group compositing and unknown blend modes are retained in source metadata and reported as diagnostics; their appearance falls back to normal compositing. Imported linear/radial vector gradients preserve their transform and stops, but full CSS-gradient offset/length parity and angular/diamond gradients remain incomplete.
 - Figma text import maps layer-wide font weights, case, decoration, authored line breaks, spacing, and text resize. Mixed formatting runs, saved glyph outlines, and font diagnostics for families outside the bundled set remain incomplete.
 - SVG export wraps browser-rendered HTML in an SVG foreignObject. It preserves appearance in compatible viewers but is not a fully native vector document.
 - PNG and PDF export require Microsoft Edge or Chrome installed on the machine.
