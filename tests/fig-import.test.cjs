@@ -264,6 +264,41 @@ test('Figma vector gradient fills remain visible as editable SVG gradients', asy
   assert.match(sheared, /gradientTransform="matrix\(10 0 -2\.5 5 7\.5 5\)"/);
 });
 
+test('Figma blend modes map to CSS where supported and retain unsupported source values', async () => {
+  const { importParsedFigDocument } = await import('../fig-import.mjs');
+  const page = { guid: guid(85), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
+  const overlay = {
+    guid: guid(86), type: 'FRAME', name: 'Overlay layer', phase: 'CREATED', blendMode: 'OVERLAY',
+    size: { x: 80, y: 40 }, transform: { m00: 1, m11: 1 },
+  };
+  const softLight = {
+    guid: guid(87), type: 'RECTANGLE', name: 'Soft light layer', phase: 'CREATED', blendMode: 'SOFT_LIGHT',
+    size: { x: 40, y: 20 }, transform: { m00: 1, m11: 1 },
+  };
+  const passThrough = {
+    guid: guid(88), type: 'GROUP', name: 'Pass-through group', phase: 'CREATED', blendMode: 'PASS_THROUGH',
+    size: { x: 60, y: 30 }, transform: { m00: 1, m11: 1 },
+  };
+  const unsupported = {
+    guid: guid(89), type: 'RECTANGLE', name: 'Unknown blend', phase: 'CREATED', blendMode: 'DISSOLVE',
+    size: { x: 20, y: 20 }, transform: { m00: 1, m11: 1 },
+  };
+  const project = importParsedFigDocument({
+    nodes: [page, overlay, softLight, passThrough, unsupported],
+    childrenMap: new Map([[id(85), [overlay, softLight, passThrough, unsupported]]]),
+    images: new Map(), meta: {}, header: { version: 101 },
+  });
+  const [overlayLayer, softLightLayer, passThroughLayer, unsupportedLayer] = project.editor.grapesjs.pages[0].frames[0].component.components;
+  assert.equal(overlayLayer.style['mix-blend-mode'], 'overlay');
+  assert.equal(softLightLayer.style['mix-blend-mode'], 'soft-light');
+  assert.equal(passThroughLayer.style['mix-blend-mode'], undefined);
+  assert.equal(unsupportedLayer.style['mix-blend-mode'], undefined);
+  assert.equal(project.forma.scene.nodes[overlayLayer.formaNodeId].blendMode, 'OVERLAY');
+  assert.equal(project.forma.scene.nodes[passThroughLayer.formaNodeId].blendMode, 'PASS_THROUGH');
+  assert.equal(project.forma.scene.nodes[unsupportedLayer.formaNodeId].blendMode, 'DISSOLVE');
+  assert.deepEqual(project.importSummary.diagnostics.filter(item => item.code === 'BLEND_MODE_UNSUPPORTED').map(item => item.sourceNodeId), [id(88), id(89)]);
+});
+
 test('Figma sections import as unclipped containers and honor hidden-content state', async () => {
   const { importParsedFigDocument } = await import('../fig-import.mjs');
   const page = { guid: guid(70), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };

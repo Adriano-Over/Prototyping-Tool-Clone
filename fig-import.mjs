@@ -16,6 +16,11 @@ const colorCss = color => {
   const channel = value => Math.max(0, Math.min(255, Math.round(Number(value || 0) * 255)));
   return `rgba(${channel(color.r)}, ${channel(color.g)}, ${channel(color.b)}, ${Math.max(0, Math.min(1, Number(color.a ?? 1)))})`;
 };
+const CSS_BLEND_MODES = new Set([
+  'NORMAL', 'DARKEN', 'MULTIPLY', 'COLOR_BURN', 'LIGHTEN', 'SCREEN', 'COLOR_DODGE',
+  'OVERLAY', 'SOFT_LIGHT', 'HARD_LIGHT', 'DIFFERENCE', 'EXCLUSION', 'HUE',
+  'SATURATION', 'COLOR', 'LUMINOSITY',
+]);
 const hashKey = value => {
   if (!value) return '';
   if (typeof value === 'string') return value.toLowerCase();
@@ -487,6 +492,7 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
       visible: node.visible !== false,
       locked: node.locked === true,
       opacity: Number(node.opacity ?? 1),
+      ...(typeof node.blendMode === 'string' ? { blendMode: node.blendMode } : {}),
       fills: Array.isArray(node.fillPaints) ? node.fillPaints : [],
       strokes: Array.isArray(node.strokePaints) ? node.strokePaints : [],
       paintBindings: [...paintVariableBindings('fill', node.fillPaints), ...paintVariableBindings('stroke', node.strokePaints)],
@@ -512,6 +518,18 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
       if (exportSettings.length) component.attributes['data-figma-export-settings'] = JSON.stringify(exportSettings);
     }
     const style = { position: 'absolute' };
+    const blendMode = String(node.blendMode || 'NORMAL').toUpperCase();
+    if (CSS_BLEND_MODES.has(blendMode)) {
+      if (blendMode !== 'NORMAL') style['mix-blend-mode'] = blendMode.toLowerCase().replaceAll('_', '-');
+    } else {
+      addDiagnostic({
+        severity: 'warning', code: 'BLEND_MODE_UNSUPPORTED', sourceNodeId: id, propertyPath: 'blendMode',
+        reason: blendMode === 'PASS_THROUGH'
+          ? 'PASS_THROUGH is a group compositing behavior and cannot be represented by a single CSS blend mode.'
+          : `Blend mode ${blendMode} has no direct CSS mix-blend-mode equivalent.`,
+        fallback: 'The original blend mode is retained in Forma scene metadata; the layer uses normal compositing.',
+      });
+    }
     const transform = node.transform || {};
     const x = Number(transform.m02 || 0) - (parentId === null ? rootOrigin.x : 0);
     const y = Number(transform.m12 || 0) - (parentId === null ? rootOrigin.y : 0);
