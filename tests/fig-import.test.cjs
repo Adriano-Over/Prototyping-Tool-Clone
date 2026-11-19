@@ -484,6 +484,39 @@ test('Figma linear gradient fills follow the saved transform in regular and stac
   assert.match(diagonal['background-image'], /^linear-gradient\(135deg,/);
 });
 
+test('Figma ordinary shapes retain all visible fills in source paint-stack order', async () => {
+  const { importParsedFigDocument } = await import('../fig-import.mjs');
+  const page = { guid: guid(62), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
+  const shape = {
+    guid: guid(63), type: 'ROUNDED_RECTANGLE', name: 'Layered background', phase: 'CREATED',
+    size: { x: 100, y: 60 }, transform: { m00: 1, m11: 1 },
+    fillPaints: [
+      { type: 'SOLID', visible: true, opacity: 1, color: { r: 0.13, g: 0.13, b: 0.16, a: 1 } },
+      { type: 'SOLID', visible: true, opacity: 0.02, color: { r: 0, g: 0.71, b: 1, a: 1 } },
+      {
+        type: 'GRADIENT_LINEAR', visible: true, opacity: 1,
+        transform: { m00: 1, m01: 0, m02: 0, m10: 0, m11: 1, m12: 0 },
+        stops: [
+          { color: { r: 1, g: 0, b: 0, a: 1 }, position: 0 },
+          { color: { r: 0, g: 0, b: 1, a: 1 }, position: 1 },
+        ],
+      },
+      { type: 'SOLID', visible: false, opacity: 1, color: { r: 1, g: 1, b: 1, a: 1 } },
+    ],
+  };
+  const project = importParsedFigDocument({
+    nodes: [page, shape], childrenMap: new Map([[id(62), [shape]]]),
+    images: new Map(), meta: {}, header: { version: 101 },
+  });
+  const imported = project.editor.grapesjs.pages[0].frames[0].component.components[0];
+  const layers = imported.style['background-image'].split(/,\s*(?=linear-gradient\()/);
+  assert.equal(layers.length, 3, 'hidden paint is excluded while all three visible paints are kept');
+  assert.match(layers[0], /^linear-gradient\(90deg, rgba\(255, 0, 0, 1\) 0%, rgba\(0, 0, 255, 1\) 100%\)$/);
+  assert.match(layers[1], /^linear-gradient\(rgba\(0, 181, 255, 0\.02\), rgba\(0, 181, 255, 0\.02\)\)$/);
+  assert.match(layers[2], /^linear-gradient\(rgba\(33, 33, 41, 1\), rgba\(33, 33, 41, 1\)\)$/);
+  assert.equal(imported.style['background-color'], undefined, 'stacked layers are represented by the CSS background stack');
+});
+
 test('Figma image rotation, crop transforms, and tile scaling are applied', async () => {
   const { paintStackCss } = await import('../fig-import.mjs');
   const images = new Map([['0102', { dataUrl: 'data:image/png;base64,iVBORw0KGgo=' }]]);

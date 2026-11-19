@@ -561,9 +561,10 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     } else if (Number.isFinite(radius) && radius > 0) style['border-radius'] = `${radius}px`;
 
     const imageFills = [];
-    const hasImageFill = type !== 'TEXT' && (node.fillPaints || []).some(paint => paint?.type === 'IMAGE' && paint.visible !== false);
-    const fill = hasImageFill ? null : paintCss(node.fillPaints, images, imageFills, node.size, resolvePaintVariable);
-    if (hasImageFill) Object.assign(style, paintStackCss(node.fillPaints, images, imageFills, node.size, resolvePaintVariable) || {});
+    const visibleFillPaints = (node.fillPaints || []).filter(paint => paint?.visible !== false && Number(paint?.opacity ?? 1) > 0);
+    const usePaintStack = type !== 'TEXT' && (visibleFillPaints.length > 1 || visibleFillPaints.some(paint => paint.type === 'IMAGE'));
+    const fill = usePaintStack ? null : paintCss(node.fillPaints, images, imageFills, node.size, resolvePaintVariable);
+    if (usePaintStack) Object.assign(style, paintStackCss(node.fillPaints, images, imageFills, node.size, resolvePaintVariable) || {});
     if (fill?.color) style[type === 'TEXT' ? 'color' : 'background-color'] = fill.color;
     if (fill?.gradient) style['background-image'] = fill.gradient;
     if (fill?.image) {
@@ -732,7 +733,7 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     if (vectorPaint || visibleChildren.some(child => vectorPaintByComponent.has(child))) {
       preserveVectorSubpixelPosition(style, x, y);
     }
-    if (style.overflow === 'hidden' && !stackLayout && !fill && !hasImageFill && !stroke &&
+    if (style.overflow === 'hidden' && !stackLayout && !fill && !usePaintStack && !stroke &&
         visibleChildren.length && visibleChildren.every(child => vectorPaintByComponent.has(child))) {
       const outset = Math.max(...visibleChildren.map(child => vectorPaintByComponent.get(child)));
       if (outset > 0) {
