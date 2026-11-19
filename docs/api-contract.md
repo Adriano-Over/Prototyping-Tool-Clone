@@ -57,3 +57,5 @@ Static requests resolve under `dist/` (`/` → `index.html`); missing files retu
 ## Evidence and remaining review
 
 `tests/server-reliability.test.cjs` exercises saves, revisions, assets, portable backups, bundle assets, and boundary headers. `tests/workspace-service.test.cjs` exercises registration, roles, streaming, conflicts, comments, versions, branches, merge and libraries. `tests/server-smoke.mjs` covers the project and version API. These tests do not cover every route, response field, failure path, or storage failure; the inventory remains provisional until those gaps are checked.
+
+`tests/migration-contract.test.cjs` additionally checks project list/create/read/delete, stale writes, project version list/create/read/delete, invalid render/import, workspace session visibility, file list, membership list, presence, version list/delete, library list, audit and logout. The tests use isolated temporary storage and synthetic data.

@@ -1,0 +1,51 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const start = require('./test-server.cjs');
+
+test('migration contract covers local project, version, render and import routes', async t => {
+  const server = await start(t);
+  const post = (url, value) => server.raw(url, { method: 'POST', body: JSON.stringify(value) });
+  const read = async response => ({ status: response.status, value: await response.json() });
+  const name = 'contract-fixture';
+  const project = { id: name, name, pages: [{ id: 'page', component: { type: 'wrapper', components: [] } }] };
+  assert.equal((await read(await server.raw('/api/projects'))).status, 200);
+  const created = await read(await post('/api/projects', project));
+  assert.equal(created.status, 200);
+  assert.equal(created.value.revision, 1);
+  assert.equal((await read(await server.raw(`/api/projects/${name}`))).value.id, name);
+  assert.equal((await read(await post('/api/projects', project))).status, 409);
+  const version = await read(await post(`/api/projects/${name}/versions`, { name: 'Snapshot', project }));
+  assert.equal(version.status, 200);
+  assert.equal((await read(await server.raw(`/api/projects/${name}/versions`))).value.versions.length, 1);
+  assert.equal((await read(await server.raw(`/api/projects/${name}/versions/${version.value.id}`))).status, 200);
+  assert.equal((await read(await server.raw(`/api/projects/${name}/versions/${version.value.id}`, { method: 'DELETE' }))).value.deleted, true);
+  assert.equal((await read(await server.raw(`/api/projects/${name}/versions/${version.value.id}`))).status, 404);
+  assert.equal((await read(await post('/api/render', { format: 'svg', documents: [] }))).status, 400);
+  const imported = await server.raw('/api/import/fig', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: 'invalid fig' });
+  assert.equal(imported.status, 400);
+  assert.equal((await read(await server.raw(`/api/projects/${name}`, { method: 'DELETE' }))).value.deleted, true);
+  assert.equal((await read(await server.raw(`/api/projects/${name}`))).status, 404);
+});
+
+test('migration contract covers workspace session and remaining owner routes', async t => {
+  const server = await start(t), user = server.account();
+  assert.equal((await user.request('/me')).value.user, null);
+  assert.equal((await user.request('/files')).status, 401);
+  const registered = await user.request('/auth/register', { name: 'Fixture', email: 'fixture@example.invalid', password: 'Synthetic-password-123' });
+  assert.equal(registered.status, 200);
+  assert.equal((await user.request('/me')).value.user.id, registered.value.user.id);
+  const project = { name: 'Fixture', editor: { grapesjs: { pages: [{ id: 'page', component: { type: 'wrapper', components: [] } }] } } };
+  const created = await user.request('/files', { project });
+  const route = `/files/${created.value.id}`;
+  assert.equal((await user.request('/files')).value.files.length, 1);
+  assert.equal((await user.request(route + '/members')).value.members.length, 1);
+  assert.equal((await user.request(route + '/presence', { clientId: 'fixture-client', x: 1, y: 2 })).status, 200);
+  const version = await user.request(route + '/versions', { name: 'Fixture version' });
+  assert.equal((await user.request(route + '/versions')).value.versions.length, 1);
+  assert.equal((await user.request(route + '/versions/' + version.value.id, {}, 'DELETE')).status, 200);
+  assert.equal((await user.request(route + '/versions/' + version.value.id)).status, 404);
+  assert.deepEqual((await user.request('/libraries')).value.libraries, []);
+  assert.equal((await user.request(route + '/audit')).status, 200);
+  assert.equal((await user.request('/auth/logout', {})).status, 200);
+  assert.equal((await user.request('/me')).value.user, null);
+});

@@ -23,3 +23,5 @@ The workspace service converts the tree into a graph containing `nodes`, `pages`
 `forma.scene` and `forma.importSources` preserve Figma import information across normalization and local save. Figma source-record assets can use `application/vnd.forma.fig-source+gzip`; ordinary asset records include a content-derived ID, relative path, MIME, SHA-256 and size. Portable backups replace local asset references with embedded data.
 
 Synthetic examples are in `fixtures/projects/`. The existing recovery and server tests include constructed projects with assets, scenes and revisions; those cases are useful behavioral evidence, but they are not a replacement for inspecting three saved user projects.
+
+One additional local project found outside the project library uses a legacy `{id,name,updatedAt,data,handoff}` envelope, with four pages under `data`. `migrateProject` accepts it, but drops the top-level `handoff` field. The original file was not copied into the repository. This demonstrates why the Rust migration's lossless legacy-data requirement needs explicit round-trip coverage beyond the current JavaScript migration.
