@@ -170,6 +170,19 @@ fn convert_node(
     Ok(id)
 }
 
+fn retain_frame_metadata(frame: &Value, root: &str, nodes: &mut BTreeMap<String, Node>) {
+    if let Some(mut metadata) = frame.as_object().cloned() {
+        metadata.shift_remove("component");
+        if !metadata.is_empty() {
+            nodes
+                .get_mut(root)
+                .expect("converted frame root")
+                .extras
+                .insert("legacy_frame".into(), Value::Object(metadata));
+        }
+    }
+}
+
 impl LegacyProject {
     /// Projects simple legacy page trees while retaining the full original JSON.
     /// Unsupported geometry is rejected; omitted styling is listed in warnings.
@@ -206,7 +219,10 @@ impl LegacyProject {
                     let component = frames[0].get("component").ok_or_else(|| {
                         LegacyConversionError(format!("page {page_id}: missing root component"))
                     })?;
-                    convert_node(component, &format!("{index}"), &mut nodes, &mut warnings, 0)?
+                    let root =
+                        convert_node(component, &format!("{index}"), &mut nodes, &mut warnings, 0)?;
+                    retain_frame_metadata(&frames[0], &root, &mut nodes);
+                    root
                 } else {
                     let mut children = Vec::new();
                     for (frame_index, frame) in frames.iter().enumerate() {
@@ -215,13 +231,15 @@ impl LegacyProject {
                                 "page {page_id}: frame {frame_index} missing root component"
                             ))
                         })?;
-                        children.push(convert_node(
+                        let child = convert_node(
                             component,
                             &format!("{index}-frame-{frame_index}"),
                             &mut nodes,
                             &mut warnings,
                             0,
-                        )?);
+                        )?;
+                        retain_frame_metadata(frame, &child, &mut nodes);
+                        children.push(child);
                     }
                     let root_id = format!("legacy-{index}-frames-root");
                     if nodes.contains_key(&root_id) {
@@ -340,8 +358,8 @@ mod tests {
     #[test]
     fn projects_multiple_frames_in_order_and_retains_source() {
         let source = json!({"id":"design","pages":[{"id":"page","frames":[
-            {"component":{"formaNodeId":"first","name":"First","type":"wrapper","style":{"width":"100px","height":"80px"}}},
-            {"component":{"formaNodeId":"second","name":"Second","type":"wrapper","style":{"left":"120px","width":"60px","height":"40px"}}}
+            {"id":"frame-a","custom":{"scale":2},"component":{"formaNodeId":"first","name":"First","type":"wrapper","style":{"width":"100px","height":"80px"}}},
+            {"id":"frame-b","component":{"formaNodeId":"second","name":"Second","type":"wrapper","style":{"left":"120px","width":"60px","height":"40px"}}}
         ]}]});
         let report = LegacyProject::from_json(source.clone())
             .unwrap()
@@ -350,6 +368,11 @@ mod tests {
         let page = &report.project.pages[0];
         assert_eq!(page.nodes[&page.root].children, ["first", "second"]);
         assert_eq!(page.nodes["second"].transform.e, 120.0);
+        assert_eq!(
+            page.nodes["first"].extras["legacy_frame"],
+            json!({"id":"frame-a","custom":{"scale":2}})
+        );
+        assert_eq!(page.nodes["second"].extras["legacy_frame"]["id"], "frame-b");
         assert_eq!(
             page.nodes[&page.root].extras["synthetic_frame_container"],
             true
@@ -360,6 +383,26 @@ mod tests {
             .any(|w| w.contains("synthetic zero-sized root")));
         assert_eq!(report.project.legacy, Some(source));
         assert!(report.project.validate().is_ok());
+    }
+
+    #[test]
+    fn retains_single_frame_metadata_on_its_root() {
+        let source = json!({"pages":[{"id":"page","frames":[{"id":"frame-a","custom":{"enabled":true},"component":{"type":"wrapper"}}]}]});
+        let report = LegacyProject::from_json(source)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap();
+        let page = &report.project.pages[0];
+        assert_eq!(
+            page.nodes[&page.root].extras["legacy_frame"],
+            json!({"id":"frame-a","custom":{"enabled":true}})
+        );
+        let encoded = report.project.to_json().unwrap();
+        let restored = Project::from_json(&encoded).unwrap();
+        assert_eq!(
+            restored.pages[0].nodes[&page.root].extras["legacy_frame"]["id"],
+            "frame-a"
+        );
     }
 
     #[test]
