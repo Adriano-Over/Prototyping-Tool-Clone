@@ -124,3 +124,38 @@ test('migration contract captures workspace authentication and access failures',
   assert.equal((await owner.request(route + '/comments', { text: '' })).status, 400);
   assert.equal((await owner.request(route + '/members', { email: 'viewer@example.invalid', role: 'owner' })).status, 400);
 });
+
+test('workspace role matrix records permissions for common file actions', async t => {
+  const server = await start(t);
+  const roles = ['owner', 'editor', 'commenter', 'viewer'];
+  const clients = Object.fromEntries(roles.map(role => [role, server.account()]));
+  for (const role of roles) {
+    const result = await clients[role].request('/auth/register', { email: `${role}@matrix.invalid`, password: 'Matrix-fixture-password-123' });
+    assert.equal(result.status, 200);
+  }
+  const project = { name: 'Matrix', editor: { grapesjs: { pages: [{ id: 'page', component: { type: 'wrapper', formaNodeId: 'root', components: [] } }] } } };
+  const route = '/files/' + (await clients.owner.request('/files', { project })).value.id;
+  for (const role of roles.slice(1)) {
+    assert.equal((await clients.owner.request(route + '/members', { email: `${role}@matrix.invalid`, role })).status, 200);
+  }
+  const expected = {
+    owner:     { read: 200, members: 200, presence: 200, comment: 201, version: 201, branch: 201, audit: 200, library: 201 },
+    editor:    { read: 200, members: 200, presence: 200, comment: 201, version: 201, branch: 201, audit: 403, library: 403 },
+    commenter: { read: 200, members: 200, presence: 200, comment: 201, version: 403, branch: 403, audit: 403, library: 403 },
+    viewer:    { read: 200, members: 200, presence: 200, comment: 403, version: 403, branch: 403, audit: 403, library: 403 },
+  };
+  for (const role of roles) {
+    const client = clients[role];
+    const actual = {
+      read: (await client.request(route)).status,
+      members: (await client.request(route + '/members')).status,
+      presence: (await client.request(route + '/presence', { clientId: `client-${role}` })).status,
+      comment: (await client.request(route + '/comments', { text: 'Fixture comment' })).status,
+      version: (await client.request(route + '/versions', { name: 'Fixture version' })).status,
+      branch: (await client.request(route + '/branches', { name: 'Fixture branch' })).status,
+      audit: (await client.request(route + '/audit')).status,
+      library: (await client.request(route + '/library', { name: 'Fixture library' })).status,
+    };
+    assert.deepEqual(actual, expected[role], `${role} permissions`);
+  }
+});
