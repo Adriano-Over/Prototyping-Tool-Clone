@@ -9,10 +9,12 @@ use serde_json::Value;
 use std::fmt;
 
 mod history;
+mod legacy_scene;
 mod project;
 mod scene;
 mod variables;
 pub use history::{Command, History, HistoryError};
+pub use legacy_scene::{ConversionReport, LegacyConversionError};
 pub use project::{Project, ProjectModelError};
 pub use scene::{Affine, Node, NodeKind, Page, SceneError, Size};
 pub use variables::{Variable, VariableError, VariableKind, VariableSet, VariableValue};
