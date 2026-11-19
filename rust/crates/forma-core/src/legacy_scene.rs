@@ -1,5 +1,5 @@
 use crate::{Affine, LegacyProject, Node, NodeKind, Page, Project, Size};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -19,6 +19,101 @@ impl fmt::Display for LegacyConversionError {
     }
 }
 impl std::error::Error for LegacyConversionError {}
+
+const CONVERSION_VIEWPORT_WIDTH: f64 = 1400.0;
+
+fn media_query_applies(query: &str, viewport_width: f64) -> Option<bool> {
+    let query = query.trim().to_ascii_lowercase();
+    let query = query.strip_prefix('(')?.strip_suffix(')')?;
+    let (feature, value) = query.split_once(':')?;
+    let width = value
+        .trim()
+        .strip_suffix("px")?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    if !width.is_finite() {
+        return None;
+    }
+    match feature.trim() {
+        "max-width" => Some(viewport_width <= width),
+        "min-width" => Some(viewport_width >= width),
+        _ => None,
+    }
+}
+
+fn effective_style(
+    component: &Value,
+    style_rules: &[Value],
+    path: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Value, LegacyConversionError> {
+    let mut resolved = Map::new();
+    let id = component
+        .get("attributes")
+        .and_then(|attributes| attributes.get("id"))
+        .and_then(Value::as_str);
+    if let Some(id) = id {
+        let selector = format!("#{id}");
+        for rule in style_rules {
+            let matches_id =
+                rule.get("selectors")
+                    .and_then(Value::as_array)
+                    .is_some_and(|selectors| {
+                        selectors
+                            .iter()
+                            .any(|item| item.as_str() == Some(&selector))
+                    });
+            if !matches_id {
+                continue;
+            }
+            if let Some(media) = rule.get("mediaText").and_then(Value::as_str) {
+                match media_query_applies(media, CONVERSION_VIEWPORT_WIDTH) {
+                    Some(true) => {}
+                    Some(false) => continue,
+                    None => {
+                        warnings.push(format!(
+                            "{path}: unsupported CSS media query {media}; rule skipped"
+                        ));
+                        continue;
+                    }
+                }
+            }
+            let declarations = rule
+                .get("style")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    LegacyConversionError(format!(
+                        "{path}: matching CSS rule style must be an object"
+                    ))
+                })?;
+            resolved.extend(
+                declarations
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        }
+    } else if component
+        .get("classes")
+        .and_then(Value::as_array)
+        .is_some_and(|classes| !classes.is_empty())
+    {
+        warnings.push(format!(
+            "{path}: class-based CSS rules are not converted; source retained"
+        ));
+    }
+    if let Some(inline) = component.get("style").filter(|value| !value.is_null()) {
+        let inline = inline
+            .as_object()
+            .ok_or_else(|| LegacyConversionError(format!("{path}: style must be an object")))?;
+        resolved.extend(
+            inline
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
+    Ok(Value::Object(resolved))
+}
 
 fn number(style: &Value, key: &str, path: &str) -> Result<f64, LegacyConversionError> {
     let Some(value) = style.get(key) else {
@@ -169,6 +264,7 @@ fn css_transform(
 fn convert_node(
     value: &Value,
     path: &str,
+    style_rules: &[Value],
     nodes: &mut BTreeMap<String, Node>,
     warnings: &mut Vec<String>,
     depth: usize,
@@ -208,25 +304,55 @@ fn convert_node(
             NodeKind::Unknown(other.into())
         }
     };
-    let style = object.get("style").unwrap_or(&Value::Null);
-    if !style.is_null() && !style.is_object() {
-        return Err(LegacyConversionError(format!(
-            "{path}: style must be an object"
-        )));
-    }
+    let style = effective_style(value, style_rules, path, warnings)?;
     if style
         .get("position")
-        .is_some_and(|v| !matches!(v.as_str(), Some("absolute" | "static")))
+        .is_some_and(|v| !matches!(v.as_str(), Some("absolute" | "relative" | "static")))
     {
         return Err(LegacyConversionError(format!(
             "{path}: layout positioning requires a dedicated adapter"
         )));
     }
-    let x = number(style, "left", path)?;
-    let y = number(style, "top", path)?;
-    let width = number(style, "width", path)?;
-    let height = number(style, "height", path)?;
-    let transform = css_transform(style, x, y, width, height, path)?;
+    let position = style
+        .get("position")
+        .and_then(Value::as_str)
+        .unwrap_or("static");
+    if position == "relative"
+        && ["left", "top"].iter().any(|key| {
+            style
+                .get(*key)
+                .is_some_and(|value| value.as_str() != Some("auto"))
+        })
+    {
+        return Err(LegacyConversionError(format!(
+            "{path}: flow layout offsets require a dedicated adapter"
+        )));
+    }
+    let x = if position != "absolute" && style.get("left").and_then(Value::as_str) == Some("auto") {
+        0.0
+    } else {
+        number(&style, "left", path)?
+    };
+    let y = if position != "absolute" && style.get("top").and_then(Value::as_str) == Some("auto") {
+        0.0
+    } else {
+        number(&style, "top", path)?
+    };
+    let width = number(&style, "width", path)?;
+    let height = number(&style, "height", path)?;
+    let transform = css_transform(&style, x, y, width, height, path)?;
+    if matches!(
+        style.get("display").and_then(Value::as_str),
+        Some("flex" | "inline-flex" | "grid" | "inline-grid")
+    ) && object
+        .get("components")
+        .and_then(Value::as_array)
+        .is_some_and(|children| !children.is_empty())
+    {
+        return Err(LegacyConversionError(format!(
+            "{path}: CSS auto layout requires a dedicated adapter"
+        )));
+    }
     if style.get("width").is_none() || style.get("height").is_none() {
         warnings.push(format!(
             "{path}: missing dimensions represented as zero; source retained"
@@ -284,11 +410,21 @@ fn convert_node(
             )))
         }
     };
+    for (index, child) in children.iter().enumerate() {
+        let child_style =
+            effective_style(child, style_rules, &format!("{path}-{index}"), warnings)?;
+        if child_style.get("position").and_then(Value::as_str) == Some("relative") {
+            return Err(LegacyConversionError(format!(
+                "{path}-{index}: flow layout requires a dedicated adapter"
+            )));
+        }
+    }
     let mut child_ids = Vec::new();
     for (index, child) in children.iter().enumerate() {
         child_ids.push(convert_node(
             child,
             &format!("{path}-{index}"),
+            style_rules,
             nodes,
             warnings,
             depth + 1,
@@ -324,6 +460,17 @@ impl LegacyProject {
             .get("pages")
             .and_then(Value::as_array)
             .ok_or_else(|| LegacyConversionError("Missing pages".into()))?;
+        let style_rules = self
+            .editor()
+            .get("styles")
+            .map(|styles| {
+                styles
+                    .as_array()
+                    .ok_or_else(|| LegacyConversionError("CSS styles must be an array".into()))
+            })
+            .transpose()?
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let mut converted = Vec::new();
         let mut warnings = vec!["Partial projection: styles, CSS rules, layout and editor metadata require further conversion; original project retained".to_owned()];
         for (index, page) in pages.iter().enumerate() {
@@ -347,8 +494,14 @@ impl LegacyProject {
                     let component = frames[0].get("component").ok_or_else(|| {
                         LegacyConversionError(format!("page {page_id}: missing root component"))
                     })?;
-                    let root =
-                        convert_node(component, &format!("{index}"), &mut nodes, &mut warnings, 0)?;
+                    let root = convert_node(
+                        component,
+                        &format!("{index}"),
+                        style_rules,
+                        &mut nodes,
+                        &mut warnings,
+                        0,
+                    )?;
                     retain_frame_metadata(&frames[0], &root, &mut nodes);
                     root
                 } else {
@@ -362,6 +515,7 @@ impl LegacyProject {
                         let child = convert_node(
                             component,
                             &format!("{index}-frame-{frame_index}"),
+                            style_rules,
                             &mut nodes,
                             &mut warnings,
                             0,
@@ -402,7 +556,14 @@ impl LegacyProject {
                 let component = page.get("component").ok_or_else(|| {
                     LegacyConversionError(format!("page {page_id}: missing root component"))
                 })?;
-                convert_node(component, &format!("{index}"), &mut nodes, &mut warnings, 0)?
+                convert_node(
+                    component,
+                    &format!("{index}"),
+                    style_rules,
+                    &mut nodes,
+                    &mut warnings,
+                    0,
+                )?
             };
             converted.push(Page {
                 id: page_id.clone(),
@@ -459,6 +620,81 @@ mod tests {
             assert_eq!(report.project.legacy, Some(source));
             assert!(!report.warnings.is_empty());
             assert!(report.project.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn projects_real_import_geometry_from_css_rules_and_retains_the_source() {
+        let source: Value = serde_json::from_str(include_str!(
+            "../../../../fixtures/projects/forma-real-css-rules.json"
+        ))
+        .unwrap();
+        let report = LegacyProject::from_json(source.clone())
+            .unwrap()
+            .project_simple_pages("fallback")
+            .unwrap();
+        let page = &report.project.pages[0];
+        let frame = &page.nodes[&page.root];
+        let section = &page.nodes[&frame.children[0]];
+        assert_eq!((frame.size.width, frame.size.height), (1024.0, 3368.0));
+        assert_eq!(
+            (
+                section.transform.e,
+                section.transform.f,
+                section.size.width,
+                section.size.height
+            ),
+            (0.0, 1021.0, 750.0, 1000.0)
+        );
+        assert_eq!(report.project.legacy, Some(source));
+        assert!(report.project.validate().is_ok());
+    }
+
+    #[test]
+    fn cascades_matching_id_rules_at_the_default_viewport_before_inline_style() {
+        let source = json!({
+            "pages": [{"frames": [{"component": {
+                "type": "wrapper",
+                "attributes": {"id": "frame"},
+                "components": [{
+                    "type": "wrapper",
+                    "attributes": {"id": "box"},
+                    "style": {"left": "12px"}
+                }]
+            }}]}],
+            "styles": [
+                {"selectors": ["#frame"], "style": {"position": "absolute", "width": "100px", "height": "50px"}},
+                {"selectors": ["#box"], "style": {"position": "absolute", "left": "7px", "top": "8px", "width": "20px", "height": "10px"}, "mediaText": "(max-width: 1400px)"},
+                {"selectors": ["#box"], "style": {"left": "99px"}, "mediaText": "(max-width: 800px)"}
+            ]
+        });
+        let report = LegacyProject::from_json(source)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap();
+        let page = &report.project.pages[0];
+        let box_node = &page.nodes[&page.nodes[&page.root].children[0]];
+        assert_eq!(
+            (
+                box_node.transform.e,
+                box_node.transform.f,
+                box_node.size.width,
+                box_node.size.height
+            ),
+            (12.0, 8.0, 20.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn rejects_flex_and_grid_layout_instead_of_guessing_child_positions() {
+        for display in ["flex", "inline-flex", "grid", "inline-grid"] {
+            let source = json!({"pages":[{"component":{"type":"wrapper","style":{"position":"absolute","width":"100px","height":"50px","display":display},"components":[{"type":"wrapper","style":{"position":"relative","left":"auto","top":"auto","width":"20px","height":"10px"}}]}}]});
+            assert!(LegacyProject::from_json(source)
+                .unwrap()
+                .project_simple_pages("id")
+                .unwrap_err()
+                .to_string()
+                .contains("auto layout requires"));
         }
     }
     #[test]

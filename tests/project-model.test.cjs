@@ -13,6 +13,17 @@ test('migrates a legacy GrapesJS save into schema version 3 with empty scene met
   assert.deepEqual(project.assets,[]);
 });
 
+test('preserves real imported CSS geometry rules used by the Rust converter fixture', async () => {
+  const { migrateProject } = await import('../dist/project-model.js');
+  const fixture = JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, '../fixtures/projects/forma-real-css-rules.json'), 'utf8'));
+  const migrated = migrateProject(fixture, { now: '2026-11-19T00:00:00.000Z' });
+  const editor = fixture.editor.grapesjs;
+  assert.deepEqual(migrated.editor.grapesjs.pages, editor.pages);
+  assert.deepEqual(migrated.editor.grapesjs.styles, editor.styles);
+  assert.equal(editor.styles.find(rule => rule.selectors.includes('#fig-0eac98eef79c')).style.top, '1021px');
+  assert.equal(editor.styles.find(rule => rule.selectors.includes('#fig-page-2725fd8c3f20')).style.width, '1024px');
+});
+
 test('preserves project-scoped Forma metadata through schema 2 to 3 normalization', async () => {
   const { migrateProject } = await import('../dist/project-model.js');
   const input={format:'forma-project',schemaVersion:2,id:'a',name:'A',editor:{grapesjs:{pages:[{}]}},forma:{components:[{id:'c'}],variables:{mode:'dark',modes:{dark:{x:'1'}}},comments:{node_a:[{text:'note'}]},prototype:{node_a:{action:'message'}},layoutMetadata:{node_a:{}}},assets:[{id:'asset_a'}]};
