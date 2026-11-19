@@ -1,5 +1,6 @@
 .sites-runtime/
 node_modules/
+rust/target/
 *.tar.gz
 
 # Native Windows build outputs and restored dependencies
