@@ -8,6 +8,9 @@
 use serde_json::Value;
 use std::fmt;
 
+mod history;
+pub use history::{Command, History, HistoryError};
+
 /// A validated legacy project, retaining all unknown fields for round trips.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegacyProject {
