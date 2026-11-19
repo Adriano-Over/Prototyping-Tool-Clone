@@ -209,6 +209,201 @@ fn transform_origin(
     ))
 }
 
+fn transform_error(path: &str, detail: &str) -> LegacyConversionError {
+    LegacyConversionError(format!("{path}: {detail}"))
+}
+
+fn transform_arguments<'a>(
+    text: &'a str,
+    path: &str,
+) -> Result<Vec<&'a str>, LegacyConversionError> {
+    let parts = if text.contains(',') {
+        text.split(',').map(str::trim).collect::<Vec<_>>()
+    } else {
+        text.split_whitespace().collect::<Vec<_>>()
+    };
+    if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
+        return Err(transform_error(path, "invalid CSS transform arguments"));
+    }
+    Ok(parts)
+}
+
+fn transform_number(text: &str, path: &str) -> Result<f64, LegacyConversionError> {
+    text.parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| transform_error(path, "invalid CSS transform number"))
+}
+
+fn transform_length(text: &str, basis: f64, path: &str) -> Result<f64, LegacyConversionError> {
+    let text = text.trim();
+    if let Some(percent) = text.strip_suffix('%') {
+        return Ok(transform_number(percent, path)? * basis / 100.0);
+    }
+    if let Some(pixels) = text.strip_suffix("px") {
+        return transform_number(pixels.trim(), path);
+    }
+    if text == "0" {
+        return Ok(0.0);
+    }
+    Err(transform_error(
+        path,
+        "unsupported CSS transform length unit",
+    ))
+}
+
+fn transform_angle(text: &str, path: &str) -> Result<f64, LegacyConversionError> {
+    let text = text.trim();
+    let (number, factor) = if let Some(value) = text.strip_suffix("deg") {
+        (value, std::f64::consts::PI / 180.0)
+    } else if let Some(value) = text.strip_suffix("rad") {
+        (value, 1.0)
+    } else if let Some(value) = text.strip_suffix("turn") {
+        (value, std::f64::consts::TAU)
+    } else if let Some(value) = text.strip_suffix("grad") {
+        (value, std::f64::consts::PI / 200.0)
+    } else if text == "0" {
+        return Ok(0.0);
+    } else {
+        return Err(transform_error(path, "unsupported CSS transform angle"));
+    };
+    let angle = transform_number(number.trim(), path)? * factor;
+    if angle.is_finite() {
+        Ok(angle)
+    } else {
+        Err(transform_error(path, "invalid CSS transform angle"))
+    }
+}
+
+fn multiply_transform(left: &Affine, right: &Affine) -> Affine {
+    Affine {
+        a: left.a * right.a + left.c * right.b,
+        b: left.b * right.a + left.d * right.b,
+        c: left.a * right.c + left.c * right.d,
+        d: left.b * right.c + left.d * right.d,
+        e: left.a * right.e + left.c * right.f + left.e,
+        f: left.b * right.e + left.d * right.f + left.f,
+        ..Default::default()
+    }
+}
+
+fn transform_function(
+    name: &str,
+    arguments: &str,
+    width: f64,
+    height: f64,
+    path: &str,
+) -> Result<Affine, LegacyConversionError> {
+    let args = transform_arguments(arguments, path)?;
+    let matrix = |a, b, c, d, e, f| Affine {
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+        ..Default::default()
+    };
+    match name.to_ascii_lowercase().as_str() {
+        "matrix" => {
+            let values = args
+                .iter()
+                .map(|value| transform_number(value, path))
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.len() != 6 {
+                return Err(transform_error(path, "invalid CSS matrix"));
+            }
+            let [a, b, c, d, e, f] = values.as_slice() else {
+                unreachable!("matrix length validated")
+            };
+            Ok(matrix(*a, *b, *c, *d, *e, *f))
+        }
+        "translate" | "translatex" | "translatey" => {
+            let (x, y) = match (name.to_ascii_lowercase().as_str(), args.as_slice()) {
+                ("translate", [x]) => (transform_length(x, width, path)?, 0.0),
+                ("translate", [x, y]) => (
+                    transform_length(x, width, path)?,
+                    transform_length(y, height, path)?,
+                ),
+                ("translatex", [x]) => (transform_length(x, width, path)?, 0.0),
+                ("translatey", [y]) => (0.0, transform_length(y, height, path)?),
+                _ => return Err(transform_error(path, "invalid CSS translate() arguments")),
+            };
+            Ok(matrix(1.0, 0.0, 0.0, 1.0, x, y))
+        }
+        "scale" | "scalex" | "scaley" => {
+            let (x, y) = match (name.to_ascii_lowercase().as_str(), args.as_slice()) {
+                ("scale", [scale]) => {
+                    let value = transform_number(scale, path)?;
+                    (value, value)
+                }
+                ("scale", [x, y]) => (transform_number(x, path)?, transform_number(y, path)?),
+                ("scalex", [x]) => (transform_number(x, path)?, 1.0),
+                ("scaley", [y]) => (1.0, transform_number(y, path)?),
+                _ => return Err(transform_error(path, "invalid CSS scale() arguments")),
+            };
+            Ok(matrix(x, 0.0, 0.0, y, 0.0, 0.0))
+        }
+        "rotate" => {
+            if args.len() != 1 {
+                return Err(transform_error(path, "invalid CSS rotate() arguments"));
+            }
+            let angle = transform_angle(args[0], path)?;
+            let (sin, cos) = angle.sin_cos();
+            Ok(matrix(cos, sin, -sin, cos, 0.0, 0.0))
+        }
+        "skewx" | "skewy" | "skew" => {
+            let (x, y) = match (name.to_ascii_lowercase().as_str(), args.as_slice()) {
+                ("skewx", [x]) => (transform_angle(x, path)?, 0.0),
+                ("skewy", [y]) => (0.0, transform_angle(y, path)?),
+                ("skew", [x]) => (transform_angle(x, path)?, 0.0),
+                ("skew", [x, y]) => (transform_angle(x, path)?, transform_angle(y, path)?),
+                _ => return Err(transform_error(path, "invalid CSS skew() arguments")),
+            };
+            let tx = x.tan();
+            let ty = y.tan();
+            if !tx.is_finite() || !ty.is_finite() {
+                return Err(transform_error(path, "invalid CSS skew angle"));
+            }
+            Ok(matrix(1.0, ty, tx, 1.0, 0.0, 0.0))
+        }
+        _ => Err(transform_error(path, "unsupported CSS transform function")),
+    }
+}
+
+fn transform_list(
+    text: &str,
+    width: f64,
+    height: f64,
+    path: &str,
+) -> Result<Affine, LegacyConversionError> {
+    let mut rest = text.trim();
+    let mut result = Affine::default();
+    while !rest.is_empty() {
+        let open = rest
+            .find('(')
+            .ok_or_else(|| transform_error(path, "invalid CSS transform list"))?;
+        let name = rest[..open].trim();
+        if name.is_empty() || name.chars().any(char::is_whitespace) {
+            return Err(transform_error(path, "invalid CSS transform function"));
+        }
+        let body = &rest[open + 1..];
+        let close = body
+            .find(')')
+            .ok_or_else(|| transform_error(path, "unterminated CSS transform function"))?;
+        if body[..close].contains('(') {
+            return Err(transform_error(
+                path,
+                "nested CSS transform functions are unsupported",
+            ));
+        }
+        let next = transform_function(name, &body[..close], width, height, path)?;
+        result = multiply_transform(&result, &next);
+        rest = body[close + 1..].trim_start();
+    }
+    Ok(result)
+}
+
 fn css_transform(
     style: &Value,
     x: f64,
@@ -226,7 +421,7 @@ fn css_transform(
     };
     let text = value
         .as_str()
-        .ok_or_else(|| LegacyConversionError(format!("{path}: unsupported CSS transform")))?;
+        .ok_or_else(|| transform_error(path, "unsupported CSS transform"))?;
     if text.trim() == "none" {
         return Ok(Affine {
             e: x,
@@ -234,31 +429,27 @@ fn css_transform(
             ..Default::default()
         });
     }
-    let values = text
-        .trim()
-        .strip_prefix("matrix(")
-        .and_then(|inner| inner.strip_suffix(')'))
-        .ok_or_else(|| LegacyConversionError(format!("{path}: unsupported CSS transform")))?
-        .split(',')
-        .map(|part| part.trim().parse::<f64>())
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| LegacyConversionError(format!("{path}: invalid CSS matrix")))?;
-    if values.len() != 6 || values.iter().any(|value| !value.is_finite()) {
-        return Err(LegacyConversionError(format!("{path}: invalid CSS matrix")));
-    }
-    let [a, b, c, d, tx, ty] = values.as_slice() else {
-        unreachable!("matrix length validated")
-    };
+    let transform = transform_list(text, width, height, path)?;
     let (ox, oy) = transform_origin(style, width, height, path)?;
-    Ok(Affine {
-        a: *a,
-        b: *b,
-        c: *c,
-        d: *d,
+    let (a, b, c, d) = (transform.a, transform.b, transform.c, transform.d);
+    let (tx, ty) = (transform.e, transform.f);
+    let result = Affine {
+        a,
+        b,
+        c,
+        d,
         e: x + ox - a * ox - c * oy + tx,
         f: y + oy - b * ox - d * oy + ty,
         ..Default::default()
-    })
+    };
+    if [result.a, result.b, result.c, result.d, result.e, result.f]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        Ok(result)
+    } else {
+        Err(transform_error(path, "CSS transform result is not finite"))
+    }
 }
 
 fn convert_node(
@@ -761,11 +952,51 @@ mod tests {
     }
 
     #[test]
+    fn converts_chained_rotation_scale_skew_and_translation_like_forma_emits() {
+        let source = json!({"pages":[{"component":{"type":"wrapper","style":{"width":200,"height":100},"components":[
+            {"type":"wrapper","style":{"left":10,"top":20,"width":16,"height":16,"transform":"translate(4px, 8px) scale(2, 3) skewX(45deg) rotate(90deg)","transform-origin":"0 0"}},
+            {"type":"wrapper","style":{"left":2,"top":3,"width":10,"height":20,"transform":"rotate(90deg)"}},
+            {"type":"wrapper","style":{"width":80,"height":40,"transform":"translate(50%, 25%) scaleX(2) scaleY(3)","transform-origin":"0 0"}}
+        ]}}]});
+        let report = LegacyProject::from_json(source)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap();
+        let page = &report.project.pages[0];
+        let nodes = &page.nodes;
+        let chained = &nodes[&nodes[&page.root].children[0]];
+        assert!((chained.transform.a - 2.0).abs() < 1e-12);
+        assert!((chained.transform.b - 3.0).abs() < 1e-12);
+        assert!((chained.transform.c + 2.0).abs() < 1e-12);
+        assert!(chained.transform.d.abs() < 1e-12);
+        assert_eq!((chained.transform.e, chained.transform.f), (14.0, 28.0));
+        let rotated = &nodes[&nodes[&page.root].children[1]];
+        assert!(rotated.transform.a.abs() < 1e-12);
+        assert!((rotated.transform.b - 1.0).abs() < 1e-12);
+        assert!((rotated.transform.c + 1.0).abs() < 1e-12);
+        assert!(rotated.transform.d.abs() < 1e-12);
+        assert!((rotated.transform.e - 17.0).abs() < 1e-12);
+        assert!((rotated.transform.f - 8.0).abs() < 1e-12);
+        let percentage = &nodes[&nodes[&page.root].children[2]];
+        assert_eq!(
+            (
+                percentage.transform.a,
+                percentage.transform.d,
+                percentage.transform.e,
+                percentage.transform.f
+            ),
+            (2.0, 3.0, 40.0, 10.0)
+        );
+    }
+
+    #[test]
     fn rejects_unsupported_or_malformed_css_transforms_and_origins() {
         for (transform, origin) in [
             ("matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)", "0 0"),
             ("matrix(1,0,0,1,NaN,0)", "0 0"),
             ("matrix(1,0,0,1,0)", "0 0"),
+            ("translate3d(1px, 2px, 3px)", "0 0"),
+            ("rotateX(35deg)", "0 0"),
             ("matrix(1,0,0,1,0,0)", "calc(50% - 2px) 0"),
         ] {
             let source = json!({"pages":[{"component":{"type":"wrapper","style":{"width":20,"height":10,"transform":transform,"transform-origin":origin}}}]});
