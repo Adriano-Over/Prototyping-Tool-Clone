@@ -1,6 +1,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const start = require('./test-server.cjs');
+const fs = require('node:fs');
+const path = require('node:path');
+
+test('synthetic fig fixture imports through the existing importer', async () => {
+  const { importFigProject } = await import('../fig-import.mjs');
+  const bytes = fs.readFileSync(path.join(__dirname, '../fixtures/synthetic-shape.fig'));
+  const project = importFigProject(bytes, 'synthetic-shape.fig');
+  assert.equal(project.importSummary.sourceRecords, 4);
+  assert.equal(project.importSummary.pages, 1);
+  assert.deepEqual(project.importSummary.unsupportedTypes, []);
+  assert.deepEqual(project.importSummary.diagnostics, []);
+  const shape = project.editor.grapesjs.pages[0].frames[0].component.components[0];
+  assert.equal(shape.name, 'Blue rectangle');
+  assert.equal(shape.style.width, '120px');
+  assert.equal(shape.style.height, '80px');
+  assert.equal(shape.style['background-color'], 'rgba(0, 128, 255, 1)');
+});
 
 test('migration contract covers local project, version, render and import routes', async t => {
   const server = await start(t);
@@ -23,6 +40,10 @@ test('migration contract covers local project, version, render and import routes
   assert.equal((await read(await post('/api/render', { format: 'svg', documents: [] }))).status, 400);
   const imported = await server.raw('/api/import/fig', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: 'invalid fig' });
   assert.equal(imported.status, 400);
+  const fixture = fs.readFileSync(path.join(__dirname, '../fixtures/synthetic-shape.fig'));
+  const importedFixture = await read(await server.raw('/api/import/fig', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-file-name': 'synthetic-shape.fig' }, body: fixture }));
+  assert.equal(importedFixture.status, 200);
+  assert.equal(importedFixture.value.importSummary.nodes, 1);
   assert.equal((await read(await server.raw(`/api/projects/${name}`, { method: 'DELETE' }))).value.deleted, true);
   assert.equal((await read(await server.raw(`/api/projects/${name}`))).status, 404);
 });

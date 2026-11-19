@@ -6,7 +6,7 @@ The importer retains source document metadata, node IDs and occurrence paths, as
 
 Local sample inspection found the iOS 16 UI Kit contains real vector gradients and layer blend modes; `Sem título.fig` contains stacked fills. The latter currently fails full import during source preservation because decoded data contains a BigInt that `JSON.stringify` cannot serialize. This is an observed limitation to reproduce or address deliberately, not a successful parity fixture.
 
-No third-party `.fig` files have been copied into this repository: permission to redistribute them and their license status have not been established. A small redistributable real fixture is still needed. Existing synthetic import cases are in `tests/fig-import*.test.cjs`.
+No third-party `.fig` files have been copied into this repository: permission to redistribute them and their license status have not been established. `fixtures/synthetic-shape.fig` is a generated original fixture for the binary import path; an independently authored real fixture is still needed. Existing synthetic import cases are in `tests/fig-import*.test.cjs`.
 
 ## Local decoded samples
 
