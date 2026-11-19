@@ -4,6 +4,8 @@ use std::fmt;
 /// A reversible change to a project document.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
+    /// Apply multiple changes atomically as one undoable action.
+    Batch(Vec<Command>),
     /// Set an object property; `parent` is a JSON pointer to its existing parent.
     Set {
         parent: String,
@@ -43,6 +45,19 @@ impl std::error::Error for HistoryError {}
 impl Command {
     fn apply(&self, document: &mut Value) -> Result<Command, HistoryError> {
         match self {
+            Command::Batch(commands) => {
+                if commands.is_empty() {
+                    return Err(HistoryError("A batch must contain at least one command"));
+                }
+                let mut staged = document.clone();
+                let mut inverse = Vec::with_capacity(commands.len());
+                for command in commands {
+                    inverse.push(command.apply(&mut staged)?);
+                }
+                inverse.reverse();
+                *document = staged;
+                return Ok(Command::Batch(inverse));
+            }
             Command::Insert {
                 parent,
                 index,
@@ -375,5 +390,78 @@ mod tests {
         assert_eq!(doc.to_string(), original);
         assert!(history.redo(&mut doc).unwrap());
         assert_eq!(doc.to_string(), r#"{"values":{"a-second":2,"third":3}}"#);
+    }
+
+    #[test]
+    fn batch_reverses_dependent_edits_as_one_history_entry() {
+        let original = json!({"layers":[{"name":"A"}],"meta":{"selection":null}});
+        let mut doc = original.clone();
+        let mut history = History::default();
+        history
+            .execute(
+                &mut doc,
+                Command::Batch(vec![
+                    Command::Insert {
+                        parent: "/layers".into(),
+                        index: 1,
+                        value: json!({"name":"B"}),
+                    },
+                    Command::Set {
+                        parent: "/layers/1".into(),
+                        key: "name".into(),
+                        value: json!("Renamed"),
+                    },
+                    Command::Set {
+                        parent: "/meta".into(),
+                        key: "selection".into(),
+                        value: json!(1),
+                    },
+                ]),
+            )
+            .unwrap();
+        let edited = doc.clone();
+        assert_eq!(doc["layers"][1]["name"], "Renamed");
+        assert!(history.undo(&mut doc).unwrap());
+        assert_eq!(doc, original);
+        assert!(!history.undo(&mut doc).unwrap());
+        assert!(history.redo(&mut doc).unwrap());
+        assert_eq!(doc, edited);
+    }
+
+    #[test]
+    fn failed_batch_is_atomic_and_does_not_discard_redo() {
+        let mut doc = json!({"layers":["A"]});
+        let mut history = History::default();
+        history
+            .execute(
+                &mut doc,
+                Command::Insert {
+                    parent: "/layers".into(),
+                    index: 1,
+                    value: json!("B"),
+                },
+            )
+            .unwrap();
+        assert!(history.undo(&mut doc).unwrap());
+        let original = doc.clone();
+        let result = history.execute(
+            &mut doc,
+            Command::Batch(vec![
+                Command::Insert {
+                    parent: "/layers".into(),
+                    index: 1,
+                    value: json!("C"),
+                },
+                Command::RemoveAt {
+                    parent: "/layers".into(),
+                    index: 99,
+                },
+            ]),
+        );
+        assert!(result.is_err());
+        assert_eq!(doc, original);
+        assert!(history.execute(&mut doc, Command::Batch(vec![])).is_err());
+        assert!(history.redo(&mut doc).unwrap());
+        assert_eq!(doc, json!({"layers":["A","B"]}));
     }
 }
