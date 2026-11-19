@@ -452,10 +452,294 @@ fn css_transform(
     }
 }
 
+fn css_dimension(
+    style: &Value,
+    key: &str,
+    path: &str,
+) -> Result<Option<f64>, LegacyConversionError> {
+    match style.get(key) {
+        None => Ok(Some(0.0)),
+        Some(Value::String(value)) if matches!(value.trim(), "auto" | "max-content") => Ok(None),
+        Some(_) => number(style, key, path).map(Some),
+    }
+}
+
+fn css_length(value: &Value, path: &str, property: &str) -> Result<f64, LegacyConversionError> {
+    let parsed = value.as_f64().or_else(|| {
+        value.as_str().and_then(|text| {
+            let text = text.trim();
+            text.strip_suffix("px")
+                .unwrap_or(text)
+                .trim()
+                .parse::<f64>()
+                .ok()
+        })
+    });
+    parsed
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| transform_error(path, &format!("unsupported {property} value")))
+}
+
+fn flex_gap(style: &Value, row: bool, path: &str) -> Result<f64, LegacyConversionError> {
+    let specific = if row { "column-gap" } else { "row-gap" };
+    let Some(value) = style.get(specific).or_else(|| style.get("gap")) else {
+        return Ok(0.0);
+    };
+    if style.get(specific).is_none()
+        && value
+            .as_str()
+            .is_some_and(|text| text.split_whitespace().count() == 2)
+    {
+        let parts = value
+            .as_str()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        let index = if row { 1 } else { 0 };
+        return css_length(&Value::String(parts[index].into()), path, specific);
+    }
+    css_length(value, path, specific)
+}
+
+fn flex_padding(style: &Value, path: &str) -> Result<[f64; 4], LegacyConversionError> {
+    let mut padding = [0.0; 4];
+    if let Some(value) = style.get("padding") {
+        let values = if let Some(text) = value.as_str() {
+            text.split_whitespace()
+                .map(|part| Value::String(part.to_owned()))
+                .collect::<Vec<_>>()
+        } else {
+            vec![value.clone()]
+        };
+        let parsed = values
+            .iter()
+            .map(|value| css_length(value, path, "padding"))
+            .collect::<Result<Vec<_>, _>>()?;
+        match parsed.as_slice() {
+            [all] => padding = [*all; 4],
+            [vertical, horizontal] => padding = [*vertical, *horizontal, *vertical, *horizontal],
+            [top, horizontal, bottom] => padding = [*top, *horizontal, *bottom, *horizontal],
+            [top, right, bottom, left] => padding = [*top, *right, *bottom, *left],
+            _ => return Err(transform_error(path, "invalid CSS padding shorthand")),
+        }
+    }
+    for (index, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
+        if let Some(value) = style.get(format!("padding-{side}")) {
+            padding[index] = css_length(value, path, "padding")?;
+        }
+    }
+    Ok(padding)
+}
+
+fn flex_justify_offsets(
+    justify: &str,
+    free_space: f64,
+    item_count: usize,
+    gap: f64,
+    path: &str,
+) -> Result<(f64, f64), LegacyConversionError> {
+    if free_space < -1e-8 {
+        return Err(transform_error(
+            path,
+            "flex items exceed the container; shrinking is not supported",
+        ));
+    }
+    let free = free_space.max(0.0);
+    Ok(match justify {
+        "flex-start" | "start" | "normal" => (0.0, gap),
+        "flex-end" | "end" => (free, gap),
+        "center" => (free / 2.0, gap),
+        "space-between" if item_count > 1 => (0.0, gap + free / (item_count - 1) as f64),
+        "space-around" if item_count > 0 => {
+            let share = free / item_count as f64;
+            (share / 2.0, gap + share)
+        }
+        "space-evenly" => {
+            let share = free / (item_count + 1) as f64;
+            (share, gap + share)
+        }
+        "space-between" => (0.0, gap),
+        other => {
+            return Err(transform_error(
+                path,
+                &format!("unsupported flex justify-content: {other}"),
+            ));
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_flex_children(
+    style: &Value,
+    child_components: &[Value],
+    child_ids: &[String],
+    nodes: &mut BTreeMap<String, Node>,
+    width: Option<f64>,
+    height: Option<f64>,
+    style_rules: &[Value],
+    path: &str,
+    warnings: &mut Vec<String>,
+) -> Result<(f64, f64), LegacyConversionError> {
+    let row = match style
+        .get("flex-direction")
+        .and_then(Value::as_str)
+        .unwrap_or("row")
+    {
+        "row" => true,
+        "column" => false,
+        other => {
+            return Err(transform_error(
+                path,
+                &format!("unsupported flex-direction: {other}"),
+            ))
+        }
+    };
+    if style
+        .get("flex-wrap")
+        .and_then(Value::as_str)
+        .is_some_and(|wrap| wrap != "nowrap")
+    {
+        return Err(transform_error(
+            path,
+            "flex wrapping requires a dedicated adapter",
+        ));
+    }
+    let padding = flex_padding(style, path)?;
+    let main_gap = flex_gap(style, row, path)?;
+    let (main_start_padding, main_end_padding, cross_start_padding, cross_end_padding) = if row {
+        (padding[3], padding[1], padding[0], padding[2])
+    } else {
+        (padding[0], padding[2], padding[3], padding[1])
+    };
+    let mut items: Vec<(usize, f64, f64, f64, f64, bool, String)> = Vec::new();
+    for (index, (component, id)) in child_components.iter().zip(child_ids).enumerate() {
+        let child_style =
+            effective_style(component, style_rules, &format!("{path}-{index}"), warnings)?;
+        if child_style.get("position").and_then(Value::as_str) == Some("absolute") {
+            continue;
+        }
+        let node = &nodes[id];
+        let child_main_dimension = if row { "width" } else { "height" };
+        let child_cross_dimension = if row { "height" } else { "width" };
+        let child_main = css_dimension(&child_style, child_main_dimension, path)?;
+        let child_cross = css_dimension(&child_style, child_cross_dimension, path)?;
+        let basis = match child_style.get("flex-basis").and_then(Value::as_str) {
+            None | Some("auto") => child_main.unwrap_or(if row {
+                node.size.width
+            } else {
+                node.size.height
+            }),
+            Some(value) => css_length(&Value::String(value.into()), path, "flex-basis")?,
+        };
+        let grow = child_style
+            .get("flex-grow")
+            .map(|_| number(&child_style, "flex-grow", path))
+            .transpose()?
+            .unwrap_or(0.0);
+        if grow < 0.0 {
+            return Err(transform_error(path, "negative flex-grow is invalid"));
+        }
+        let cross = child_cross.unwrap_or(0.0);
+        let cross_auto = child_cross.is_none();
+        let align = child_style
+            .get("align-self")
+            .and_then(Value::as_str)
+            .or_else(|| style.get("align-items").and_then(Value::as_str))
+            .unwrap_or("stretch")
+            .to_owned();
+        items.push((
+            index,
+            basis,
+            cross,
+            grow,
+            child_main.unwrap_or(-1.0),
+            cross_auto,
+            align,
+        ));
+    }
+    let main_extent = if row { width } else { height };
+    let total_gap = main_gap * items.len().saturating_sub(1) as f64;
+    let main_content_extent =
+        main_extent.map(|value| value - main_start_padding - main_end_padding);
+    let bases = items.iter().map(|item| item.1).sum::<f64>();
+    let intrinsic_main = bases + total_gap + main_start_padding + main_end_padding;
+    let available_main = main_content_extent.unwrap_or(bases + total_gap);
+    let mut free = available_main - bases - total_gap;
+    if free < -1e-8 {
+        return Err(transform_error(
+            path,
+            "flex items exceed the container; shrinking is not supported",
+        ));
+    }
+    let grow_total = items.iter().map(|item| item.3).sum::<f64>();
+    let mut main_sizes = items.iter().map(|item| item.1).collect::<Vec<_>>();
+    if grow_total > 0.0 && main_extent.is_some() {
+        for (size, item) in main_sizes.iter_mut().zip(&items) {
+            *size += free.max(0.0) * item.3 / grow_total;
+        }
+        free = 0.0;
+    }
+    let intrinsic_cross = items.iter().map(|item| item.2).fold(0.0_f64, f64::max)
+        + cross_start_padding
+        + cross_end_padding;
+    let final_width = width.unwrap_or(if row { intrinsic_main } else { intrinsic_cross });
+    let final_height = height.unwrap_or(if row { intrinsic_cross } else { intrinsic_main });
+    let cross_content_extent =
+        (if row { final_height } else { final_width }) - cross_start_padding - cross_end_padding;
+    let justify = style
+        .get("justify-content")
+        .and_then(Value::as_str)
+        .unwrap_or("flex-start");
+    let (mut cursor, distributed_gap) =
+        flex_justify_offsets(justify, free, items.len(), main_gap, path)?;
+    cursor += main_start_padding;
+    for (item_index, item) in items.iter().enumerate() {
+        let (child_index, _, cross_size, _, original_main, cross_auto, align) = item;
+        let main_size = main_sizes[item_index];
+        if *original_main < 0.0 && item.3 == 0.0 && item.1 == 0.0 {
+            return Err(transform_error(
+                path,
+                "auto-sized flex item needs a size or positive flex-grow",
+            ));
+        }
+        let mut child_cross_size = *cross_size;
+        if *cross_auto && align == "stretch" {
+            child_cross_size = cross_content_extent;
+        }
+        let cross_position = match align.as_str() {
+            "flex-start" | "start" | "stretch" => cross_start_padding,
+            "center" => cross_start_padding + (cross_content_extent - child_cross_size) / 2.0,
+            "flex-end" | "end" => cross_start_padding + cross_content_extent - child_cross_size,
+            other => {
+                return Err(transform_error(
+                    path,
+                    &format!("unsupported flex align: {other}"),
+                ))
+            }
+        };
+        let id = &child_ids[*child_index];
+        let child = nodes.get_mut(id).expect("converted flex child");
+        if row {
+            child.size.width = main_size;
+            child.size.height = child_cross_size;
+            child.transform.e += cursor;
+            child.transform.f += cross_position;
+        } else {
+            child.size.height = main_size;
+            child.size.width = child_cross_size;
+            child.transform.e += cross_position;
+            child.transform.f += cursor;
+        }
+        cursor += main_size + distributed_gap;
+    }
+    Ok((final_width, final_height))
+}
+
 fn convert_node(
     value: &Value,
     path: &str,
     style_rules: &[Value],
+    in_flex_parent: bool,
     nodes: &mut BTreeMap<String, Node>,
     warnings: &mut Vec<String>,
     depth: usize,
@@ -508,6 +792,13 @@ fn convert_node(
         .get("position")
         .and_then(Value::as_str)
         .unwrap_or("static");
+    let display = style.get("display").and_then(Value::as_str).unwrap_or("");
+    let is_flex = matches!(display, "flex" | "inline-flex");
+    if matches!(display, "grid" | "inline-grid") {
+        return Err(LegacyConversionError(format!(
+            "{path}: CSS grid layout requires a dedicated adapter"
+        )));
+    }
     if position == "relative"
         && ["left", "top"].iter().any(|key| {
             style
@@ -529,19 +820,11 @@ fn convert_node(
     } else {
         number(&style, "top", path)?
     };
-    let width = number(&style, "width", path)?;
-    let height = number(&style, "height", path)?;
-    let transform = css_transform(&style, x, y, width, height, path)?;
-    if matches!(
-        style.get("display").and_then(Value::as_str),
-        Some("flex" | "inline-flex" | "grid" | "inline-grid")
-    ) && object
-        .get("components")
-        .and_then(Value::as_array)
-        .is_some_and(|children| !children.is_empty())
-    {
+    let width = css_dimension(&style, "width", path)?;
+    let height = css_dimension(&style, "height", path)?;
+    if !is_flex && !in_flex_parent && (width.is_none() || height.is_none()) {
         return Err(LegacyConversionError(format!(
-            "{path}: CSS auto layout requires a dedicated adapter"
+            "{path}: intrinsic or auto sizing requires a layout adapter"
         )));
     }
     if style.get("width").is_none() || style.get("height").is_none() {
@@ -559,6 +842,23 @@ fn convert_node(
                 "height",
                 "transform",
                 "transform-origin",
+                "display",
+                "flex-direction",
+                "flex-wrap",
+                "flex-grow",
+                "flex-shrink",
+                "flex-basis",
+                "gap",
+                "row-gap",
+                "column-gap",
+                "padding",
+                "padding-top",
+                "padding-right",
+                "padding-bottom",
+                "padding-left",
+                "align-items",
+                "align-self",
+                "justify-content",
             ]
             .contains(&key.as_str())
         })
@@ -574,10 +874,14 @@ fn convert_node(
             .unwrap_or(kind_text)
             .into(),
         kind,
-        transform,
+        transform: Affine {
+            e: x,
+            f: y,
+            ..Default::default()
+        },
         size: Size {
-            width,
-            height,
+            width: width.unwrap_or(0.0),
+            height: height.unwrap_or(0.0),
             extras: BTreeMap::new(),
         },
         visible: style.get("display").and_then(Value::as_str) != Some("none"),
@@ -601,13 +905,15 @@ fn convert_node(
             )))
         }
     };
-    for (index, child) in children.iter().enumerate() {
-        let child_style =
-            effective_style(child, style_rules, &format!("{path}-{index}"), warnings)?;
-        if child_style.get("position").and_then(Value::as_str) == Some("relative") {
-            return Err(LegacyConversionError(format!(
-                "{path}-{index}: flow layout requires a dedicated adapter"
-            )));
+    if !is_flex {
+        for (index, child) in children.iter().enumerate() {
+            let child_style =
+                effective_style(child, style_rules, &format!("{path}-{index}"), warnings)?;
+            if child_style.get("position").and_then(Value::as_str) == Some("relative") {
+                return Err(LegacyConversionError(format!(
+                    "{path}-{index}: flow layout requires a dedicated adapter"
+                )));
+            }
         }
     }
     let mut child_ids = Vec::new();
@@ -616,12 +922,35 @@ fn convert_node(
             child,
             &format!("{path}-{index}"),
             style_rules,
+            is_flex,
             nodes,
             warnings,
             depth + 1,
         )?);
     }
     nodes.get_mut(&id).expect("inserted node").children = child_ids;
+    let (width, height) = if is_flex {
+        let flex_child_ids = nodes[&id].children.clone();
+        layout_flex_children(
+            &style,
+            children,
+            &flex_child_ids,
+            nodes,
+            width,
+            height,
+            style_rules,
+            path,
+            warnings,
+        )?
+    } else {
+        let width = width.unwrap_or(0.0);
+        let height = height.unwrap_or(0.0);
+        (width, height)
+    };
+    let node = nodes.get_mut(&id).expect("inserted node");
+    node.size.width = width;
+    node.size.height = height;
+    node.transform = css_transform(&style, x, y, width, height, path)?;
     Ok(id)
 }
 
@@ -689,6 +1018,7 @@ impl LegacyProject {
                         component,
                         &format!("{index}"),
                         style_rules,
+                        false,
                         &mut nodes,
                         &mut warnings,
                         0,
@@ -707,6 +1037,7 @@ impl LegacyProject {
                             component,
                             &format!("{index}-frame-{frame_index}"),
                             style_rules,
+                            false,
                             &mut nodes,
                             &mut warnings,
                             0,
@@ -751,6 +1082,7 @@ impl LegacyProject {
                     component,
                     &format!("{index}"),
                     style_rules,
+                    false,
                     &mut nodes,
                     &mut warnings,
                     0,
@@ -842,6 +1174,34 @@ mod tests {
     }
 
     #[test]
+    fn lays_out_a_real_imported_flex_row_with_padding_gap_and_intrinsic_height() {
+        let source: Value = serde_json::from_str(include_str!(
+            "../../../../fixtures/projects/forma-real-flex.json"
+        ))
+        .unwrap();
+        let report = LegacyProject::from_json(source)
+            .unwrap()
+            .project_simple_pages("fallback")
+            .unwrap();
+        let page = &report.project.pages[0];
+        let frame = &page.nodes[&page.root];
+        let flex = &page.nodes[&frame.children[0]];
+        assert_eq!(
+            (
+                flex.transform.e,
+                flex.transform.f,
+                flex.size.width,
+                flex.size.height
+            ),
+            (12.0, 72.0, 48.0, 32.0)
+        );
+        let first = &page.nodes[&flex.children[0]];
+        let second = &page.nodes[&flex.children[1]];
+        assert_eq!((first.transform.e, first.transform.f), (2.0, 0.0));
+        assert_eq!((second.transform.e, second.transform.f), (40.0, 15.0));
+    }
+
+    #[test]
     fn cascades_matching_id_rules_at_the_default_viewport_before_inline_style() {
         let source = json!({
             "pages": [{"frames": [{"component": {
@@ -877,16 +1237,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_flex_and_grid_layout_instead_of_guessing_child_positions() {
-        for display in ["flex", "inline-flex", "grid", "inline-grid"] {
+    fn rejects_unsupported_grid_wrapping_and_shrinking_layouts() {
+        for display in ["grid", "inline-grid"] {
             let source = json!({"pages":[{"component":{"type":"wrapper","style":{"position":"absolute","width":"100px","height":"50px","display":display},"components":[{"type":"wrapper","style":{"position":"relative","left":"auto","top":"auto","width":"20px","height":"10px"}}]}}]});
             assert!(LegacyProject::from_json(source)
                 .unwrap()
                 .project_simple_pages("id")
                 .unwrap_err()
                 .to_string()
-                .contains("auto layout requires"));
+                .contains("CSS grid layout requires"));
         }
+
+        let wrapping = json!({"pages":[{"component":{"type":"wrapper","style":{"position":"absolute","width":"100px","height":"50px","display":"flex","flex-wrap":"wrap"},"components":[]}}]});
+        assert!(LegacyProject::from_json(wrapping)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap_err()
+            .to_string()
+            .contains("flex wrapping requires"));
+
+        let shrinking = json!({"pages":[{"component":{"type":"wrapper","style":{"position":"absolute","width":"30px","height":"50px","display":"flex","flex-direction":"row"},"components":[{"type":"wrapper","style":{"position":"relative","left":"auto","top":"auto","width":"20px","height":"10px"}},{"type":"wrapper","style":{"position":"relative","left":"auto","top":"auto","width":"20px","height":"10px"}}]}}]});
+        assert!(LegacyProject::from_json(shrinking)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap_err()
+            .to_string()
+            .contains("flex items exceed the container"));
     }
     #[test]
     fn converts_simple_geometry_and_rejects_unsupported_layout() {

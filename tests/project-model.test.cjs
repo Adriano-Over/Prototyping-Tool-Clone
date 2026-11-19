@@ -24,6 +24,19 @@ test('preserves real imported CSS geometry rules used by the Rust converter fixt
   assert.equal(editor.styles.find(rule => rule.selectors.includes('#fig-page-2725fd8c3f20')).style.width, '1024px');
 });
 
+test('preserves real imported flex layout rules used by the Rust converter fixture', async () => {
+  const { migrateProject } = await import('../dist/project-model.js');
+  const fixture = JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, '../fixtures/projects/forma-real-flex.json'), 'utf8'));
+  const migrated = migrateProject(fixture, { now: '2026-11-19T00:00:00.000Z' });
+  assert.deepEqual(migrated.editor.grapesjs.pages, fixture.editor.grapesjs.pages);
+  assert.deepEqual(migrated.editor.grapesjs.styles, fixture.editor.grapesjs.styles);
+  const dropdown = migrated.editor.grapesjs.styles.find(rule => rule.selectors.includes('#fig-91308b969527'));
+  assert.equal(dropdown.style.display, 'flex');
+  assert.equal(dropdown.style.gap, '6px');
+  assert.equal(dropdown.style['padding-left'], '2px');
+  assert.equal(dropdown.style['padding-right'], '4px');
+});
+
 test('preserves project-scoped Forma metadata through schema 2 to 3 normalization', async () => {
   const { migrateProject } = await import('../dist/project-model.js');
   const input={format:'forma-project',schemaVersion:2,id:'a',name:'A',editor:{grapesjs:{pages:[{}]}},forma:{components:[{id:'c'}],variables:{mode:'dark',modes:{dark:{x:'1'}}},comments:{node_a:[{text:'note'}]},prototype:{node_a:{action:'message'}},layoutMetadata:{node_a:{}}},assets:[{id:'asset_a'}]};

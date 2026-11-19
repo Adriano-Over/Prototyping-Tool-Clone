@@ -1,0 +1,102 @@
+{
+  "format": "forma-project",
+  "schemaVersion": 3,
+  "id": "figma-ui3-toolbar-community-flex",
+  "name": "Figma UI3 Toolbar Auto Layout Sample",
+  "editor": {
+    "grapesjs": {
+      "pages": [
+        {
+          "name": "Toolbar Demo",
+          "frames": [
+            {
+              "id": "dc3LMCQtLK2SDB7N",
+              "component": {
+                "type": "wrapper",
+                "attributes": { "id": "fig-page-2725fd8c3f20" },
+                "components": [
+                  {
+                    "type": "default",
+                    "name": "Type=Dropdown",
+                    "attributes": { "id": "fig-91308b969527" },
+                    "components": [
+                      {
+                        "type": "default",
+                        "name": "Toolbar Icon Button",
+                        "attributes": { "id": "fig-be2cc7e00792" },
+                        "components": []
+                      },
+                      {
+                        "type": "image",
+                        "name": "Vector 13",
+                        "attributes": { "id": "fig-0f6b4c8ff732" },
+                        "components": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "styles": [
+        {
+          "selectors": ["#fig-page-2725fd8c3f20"],
+          "style": { "position": "relative", "width": "1024px", "height": "500px" },
+          "mediaText": "(max-width: 1400px)",
+          "atRuleType": "media"
+        },
+        {
+          "selectors": ["#fig-91308b969527"],
+          "style": {
+            "position": "absolute",
+            "left": "12px",
+            "top": "72px",
+            "width": "48px",
+            "height": "max-content",
+            "display": "flex",
+            "flex-direction": "row",
+            "gap": "6px",
+            "padding": "0px",
+            "align-items": "center",
+            "justify-content": "flex-start",
+            "flex-wrap": "nowrap",
+            "padding-top": "0px",
+            "padding-right": "4px",
+            "padding-bottom": "0px",
+            "padding-left": "2px"
+          },
+          "mediaText": "(max-width: 1400px)",
+          "atRuleType": "media"
+        },
+        {
+          "selectors": ["#fig-be2cc7e00792"],
+          "style": {
+            "position": "relative",
+            "left": "auto",
+            "top": "auto",
+            "width": "32px",
+            "height": "32px"
+          },
+          "mediaText": "(max-width: 1400px)",
+          "atRuleType": "media"
+        },
+        {
+          "selectors": ["#fig-0f6b4c8ff732"],
+          "style": {
+            "position": "relative",
+            "left": "auto",
+            "top": "auto",
+            "width": "4px",
+            "height": "2px"
+          },
+          "mediaText": "(max-width: 1400px)",
+          "atRuleType": "media"
+        }
+      ]
+    }
+  },
+  "forma": {},
+  "assets": []
+}
