@@ -266,6 +266,62 @@ impl ProjectHistory {
         )
     }
 
+    /// Moves a child to a final zero-based position in its parent's back-to-front order.
+    pub fn reorder_child(
+        &mut self,
+        project: &mut crate::Project,
+        page_id: &str,
+        parent_id: &str,
+        child_id: &str,
+        final_index: usize,
+    ) -> Result<(), HistoryError> {
+        let page_index = project
+            .pages()
+            .iter()
+            .position(|page| page.id == page_id)
+            .ok_or(HistoryError("Project history page ID was not found"))?;
+        let page = &project.pages()[page_index];
+        let parent = page
+            .nodes
+            .get(parent_id)
+            .ok_or(HistoryError("Project history parent node ID was not found"))?;
+        if !page.nodes.contains_key(child_id) {
+            return Err(HistoryError("Project history child node ID was not found"));
+        }
+        let children = &parent.children;
+        let current_index = children
+            .iter()
+            .position(|id| id == child_id)
+            .ok_or(HistoryError(
+                "Project history node is not a child of that parent",
+            ))?;
+        if final_index >= children.len() {
+            return Err(HistoryError("Project history child index is out of bounds"));
+        }
+        if current_index == final_index {
+            return Ok(());
+        }
+
+        let parent_path = format!(
+            "/pages/{page_index}/nodes/{}",
+            parent_id.replace('~', "~0").replace('/', "~1")
+        );
+        self.execute(
+            project,
+            Command::Batch(vec![
+                Command::RemoveAt {
+                    parent: format!("{parent_path}/children"),
+                    index: current_index,
+                },
+                Command::Insert {
+                    parent: format!("{parent_path}/children"),
+                    index: final_index,
+                    value: serde_json::json!(child_id),
+                },
+            ]),
+        )
+    }
+
     pub fn undo(&mut self, project: &mut crate::Project) -> Result<bool, HistoryError> {
         self.apply(project, |history, document| history.undo(document))
     }
@@ -784,6 +840,106 @@ mod tests {
             )
             .is_err());
         assert_eq!(project, original);
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn typed_reorder_preserves_scene_nodes_and_undoes_in_back_to_front_order() {
+        let mut project = project_with_snapshot();
+        let root_id = "root/one~two";
+        let page = &mut project.pages[0];
+        let root = page.nodes.remove("root").unwrap();
+        page.root = root_id.into();
+        page.nodes.insert(root_id.into(), root);
+        for id in ["a", "b", "c"] {
+            page.nodes.insert(
+                id.into(),
+                Node {
+                    name: id.into(),
+                    kind: NodeKind::Rectangle,
+                    transform: Affine {
+                        e: if id == "a" { 7.0 } else { 0.0 },
+                        ..Affine::default()
+                    },
+                    size: Size {
+                        width: 10.0,
+                        height: 10.0,
+                        extras: BTreeMap::new(),
+                    },
+                    visible: true,
+                    locked: false,
+                    children: vec![],
+                    extras: BTreeMap::new(),
+                },
+            );
+        }
+        page.nodes.get_mut(root_id).unwrap().children = vec!["a".into(), "b".into(), "c".into()];
+        let mut history = ProjectHistory::default();
+
+        history
+            .reorder_child(&mut project, "page", root_id, "c", 0)
+            .unwrap();
+        assert_eq!(project.pages()[0].nodes[root_id].children, ["c", "a", "b"]);
+        assert_eq!(project.pages()[0].nodes["a"].transform.e, 7.0);
+        assert_eq!(project.revision(), 4);
+
+        assert!(history.undo(&mut project).unwrap());
+        assert_eq!(project.pages()[0].nodes[root_id].children, ["a", "b", "c"]);
+        assert_eq!(project.revision(), 5);
+        assert!(history.redo(&mut project).unwrap());
+        assert_eq!(project.pages()[0].nodes[root_id].children, ["c", "a", "b"]);
+        assert_eq!(project.revision(), 6);
+        assert!(project.validate().is_ok());
+    }
+
+    #[test]
+    fn typed_reorder_rejects_invalid_targets_and_noops_without_history() {
+        let mut project = project_with_snapshot();
+        project.pages[0].nodes.insert(
+            "child".into(),
+            Node {
+                name: "Child".into(),
+                kind: NodeKind::Rectangle,
+                transform: Affine::default(),
+                size: Size {
+                    width: 10.0,
+                    height: 10.0,
+                    extras: BTreeMap::new(),
+                },
+                visible: true,
+                locked: false,
+                children: vec![],
+                extras: BTreeMap::new(),
+            },
+        );
+        project.pages[0]
+            .nodes
+            .get_mut("root")
+            .unwrap()
+            .children
+            .push("child".into());
+        let mut history = ProjectHistory::default();
+        let original = project.clone();
+
+        assert!(history
+            .reorder_child(&mut project, "missing", "root", "root", 0)
+            .is_err());
+        assert!(history
+            .reorder_child(&mut project, "page", "missing", "root", 0)
+            .is_err());
+        assert!(history
+            .reorder_child(&mut project, "page", "root", "missing", 0)
+            .is_err());
+        assert!(history
+            .reorder_child(&mut project, "page", "root", "root", 0)
+            .is_err());
+        assert_eq!(project, original);
+        assert!(!history.can_undo());
+
+        history
+            .reorder_child(&mut project, "page", "root", "child", 0)
+            .unwrap();
+        assert_eq!(project.revision(), original.revision());
         assert!(!history.can_undo());
     }
 }
