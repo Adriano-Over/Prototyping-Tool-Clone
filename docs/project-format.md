@@ -13,3 +13,13 @@ Version 3 uses an envelope like:
 `migrateProject` accepts `editor.grapesjs.pages`, legacy `data.pages`, or top-level `pages`, and rejects future Forma schema versions. Its output selects known envelope fields, so unknown top-level fields are not necessarily preserved by current migration. The server requires at least one page when saving. Browser recovery and workspace graph serialization have additional rules in `dist/project-store.js` and `dist/collaboration-model.js`.
 
 Rust parity must preserve actual input data and its existing behavior; proposed lossless preservation is an additional requirement, not a description of current migration. Fixture coverage and detailed nested-field examples remain to be established before this contract is frozen.
+
+## Nested data and workspace graph
+
+GrapesJS page data can contain a `frames` array with each frame's `component` tree, or a page-level `component`/`components` tree. A component may include `type`, `name`, `content`, `attributes`, `style`, `components`, and Forma-specific fields such as `formaNodeId`. These nested objects are not constrained by a complete schema in `project-model.js`.
+
+The workspace service converts the tree into a graph containing `nodes`, `pages`, `pageOrder`, `rules`, `ruleOrder`, `editor`, `assets`, `assetOrder`, and `meta`. Each node is `{props,children}`. Node identity uses `formaNodeId` when present, otherwise a deterministic ID derived from its path. A graph rejects duplicate node identities, cycles, missing nodes, multiple parents, or zero pages. `graphToProject` reconstructs component trees and creates a schema 3 envelope; timestamps and the shared file's ID differ from a local file.
+
+`forma.scene` and `forma.importSources` preserve Figma import information across normalization and local save. Figma source-record assets can use `application/vnd.forma.fig-source+gzip`; ordinary asset records include a content-derived ID, relative path, MIME, SHA-256 and size. Portable backups replace local asset references with embedded data.
+
+Synthetic examples are in `fixtures/projects/`. The existing recovery and server tests include constructed projects with assets, scenes and revisions; those cases are useful behavioral evidence, but they are not a replacement for inspecting three saved user projects.
