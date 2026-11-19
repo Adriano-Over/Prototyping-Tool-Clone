@@ -13,7 +13,7 @@ mod legacy_scene;
 mod project;
 mod scene;
 mod variables;
-pub use history::{Command, History, HistoryError};
+pub use history::{Command, History, HistoryError, ProjectHistory};
 pub use legacy_scene::{ConversionReport, LegacyConversionError};
 pub use project::{Project, ProjectModelError};
 pub use scene::{Affine, Node, NodeKind, Page, SceneError, Size};

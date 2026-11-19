@@ -170,7 +170,7 @@ impl Command {
 }
 
 /// A single chronological undo and redo history for one JSON document.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct History {
     undo: Vec<Command>,
     redo: Vec<Command>,
@@ -206,12 +206,149 @@ impl History {
         self.undo.push(inverse);
         Ok(true)
     }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+}
+
+/// Undo/redo history that applies JSON commands to a typed, validated Forma project.
+#[derive(Debug, Default)]
+pub struct ProjectHistory {
+    history: History,
+}
+
+impl ProjectHistory {
+    /// Applies a command within `/pages` and commits only if the resulting project validates.
+    pub fn execute(
+        &mut self,
+        project: &mut crate::Project,
+        command: Command,
+    ) -> Result<(), HistoryError> {
+        validate_project_command(&command)?;
+        self.apply(project, |history, document| {
+            history.execute(document, command)?;
+            Ok(true)
+        })
+        .map(|_| ())
+    }
+
+    pub fn undo(&mut self, project: &mut crate::Project) -> Result<bool, HistoryError> {
+        self.apply(project, |history, document| history.undo(document))
+    }
+
+    pub fn redo(&mut self, project: &mut crate::Project) -> Result<bool, HistoryError> {
+        self.apply(project, |history, document| history.redo(document))
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    fn apply(
+        &mut self,
+        project: &mut crate::Project,
+        operation: impl FnOnce(&mut History, &mut Value) -> Result<bool, HistoryError>,
+    ) -> Result<bool, HistoryError> {
+        let mut staged_history = self.history.clone();
+        let mut document = serde_json::json!({ "pages": project.pages() });
+        if !operation(&mut staged_history, &mut document)? {
+            return Ok(false);
+        }
+        let pages: Vec<crate::Page> = serde_json::from_value(
+            document
+                .get("pages")
+                .cloned()
+                .ok_or(HistoryError("Project history removed the pages collection"))?,
+        )
+        .map_err(|_| HistoryError("Project history produced invalid page data"))?;
+        if pages == project.pages() {
+            return Ok(false);
+        }
+        project
+            .edit_pages(|current| *current = pages)
+            .map_err(|_| HistoryError("Project history edit violates scene invariants"))?;
+        self.history = staged_history;
+        Ok(true)
+    }
+}
+
+fn validate_project_command(command: &Command) -> Result<(), HistoryError> {
+    let valid_parent = |parent: &str| parent == "/pages" || parent.starts_with("/pages/");
+    match command {
+        Command::Batch(commands) => {
+            if commands
+                .iter()
+                .any(|command| validate_project_command(command).is_err())
+            {
+                return Err(HistoryError(
+                    "Project history commands must stay within /pages",
+                ));
+            }
+        }
+        Command::Set { parent, .. }
+        | Command::Remove { parent, .. }
+        | Command::Insert { parent, .. }
+        | Command::RemoveAt { parent, .. }
+        | Command::RestoreProperty { parent, .. } => {
+            if !valid_parent(parent) {
+                return Err(HistoryError(
+                    "Project history commands must stay within /pages",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Affine, Node, NodeKind, Page, Project, Size};
     use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn project_with_snapshot() -> Project {
+        Project {
+            id: "project".into(),
+            name: "Design".into(),
+            revision: 3,
+            pages: vec![Page {
+                id: "page".into(),
+                name: "Page".into(),
+                root: "root".into(),
+                nodes: BTreeMap::from([(
+                    "root".into(),
+                    Node {
+                        name: "Root".into(),
+                        kind: NodeKind::Frame,
+                        transform: Affine::default(),
+                        size: Size {
+                            width: 100.0,
+                            height: 100.0,
+                            extras: BTreeMap::new(),
+                        },
+                        visible: true,
+                        locked: false,
+                        children: vec![],
+                        extras: BTreeMap::new(),
+                    },
+                )]),
+                extras: BTreeMap::new(),
+            }],
+            legacy: Some(json!({"source":"original"})),
+            legacy_snapshot_revision: Some(3),
+            extras: BTreeMap::new(),
+        }
+    }
 
     #[test]
     fn undo_redo_crosses_document_and_metadata_changes() {
@@ -463,5 +600,83 @@ mod tests {
         assert!(history.execute(&mut doc, Command::Batch(vec![])).is_err());
         assert!(history.redo(&mut doc).unwrap());
         assert_eq!(doc, json!({"layers":["A","B"]}));
+    }
+
+    #[test]
+    fn project_history_validates_edits_and_keeps_revisions_monotonic_through_undo_redo() {
+        let mut project = project_with_snapshot();
+        let mut history = ProjectHistory::default();
+        let command = Command::Set {
+            parent: "/pages/0/nodes/root".into(),
+            key: "name".into(),
+            value: json!("Edited"),
+        };
+
+        history.execute(&mut project, command).unwrap();
+        assert!(history.can_undo());
+        assert!(!history.can_redo());
+        assert_eq!(project.pages()[0].nodes["root"].name, "Edited");
+        assert_eq!(project.revision(), 4);
+        assert_eq!(
+            project.legacy_snapshot(),
+            Some(&json!({"source":"original"}))
+        );
+        assert!(!project.legacy_snapshot_is_current());
+
+        assert!(history.undo(&mut project).unwrap());
+        assert_eq!(project.pages()[0].nodes["root"].name, "Root");
+        assert_eq!(project.revision(), 5);
+        assert!(!project.legacy_snapshot_is_current());
+        assert!(history.can_redo());
+
+        assert!(history.redo(&mut project).unwrap());
+        assert_eq!(project.pages()[0].nodes["root"].name, "Edited");
+        assert_eq!(project.revision(), 6);
+        assert!(!project.legacy_snapshot_is_current());
+        assert!(!history.can_redo());
+    }
+
+    #[test]
+    fn rejected_project_commands_do_not_change_scene_or_history() {
+        let mut project = project_with_snapshot();
+        let original = project.clone();
+        let mut history = ProjectHistory::default();
+
+        let metadata_edit = Command::Set {
+            parent: "".into(),
+            key: "name".into(),
+            value: json!("Changed"),
+        };
+        assert!(history.execute(&mut project, metadata_edit).is_err());
+
+        let invalid_scene_edit = Command::Set {
+            parent: "/pages/0".into(),
+            key: "root".into(),
+            value: json!("missing-node"),
+        };
+        assert!(history.execute(&mut project, invalid_scene_edit).is_err());
+        assert_eq!(project, original);
+        assert!(!history.can_undo());
+        assert!(!history.undo(&mut project).unwrap());
+    }
+
+    #[test]
+    fn project_history_noop_does_not_create_an_entry_or_advance_revision() {
+        let mut project = project_with_snapshot();
+        let mut history = ProjectHistory::default();
+        history
+            .execute(
+                &mut project,
+                Command::Set {
+                    parent: "/pages/0/nodes/root".into(),
+                    key: "name".into(),
+                    value: json!("Root"),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(project.revision(), 3);
+        assert!(project.legacy_snapshot_is_current());
+        assert!(!history.can_undo());
     }
 }
