@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const start = require('./test-server.cjs');
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const path = require('node:path');
 
 test('synthetic fig fixture imports through the existing importer', async () => {
@@ -69,4 +70,33 @@ test('migration contract covers workspace session and remaining owner routes', a
   assert.equal((await user.request(route + '/audit')).status, 200);
   assert.equal((await user.request('/auth/logout', {})).status, 200);
   assert.equal((await user.request('/me')).value.user, null);
+});
+
+test('migration contract records SVG rendering, bundle download and failure responses', async t => {
+  const server = await start(t);
+  const vendor = path.join(server.directory, 'dist', 'vendor');
+  await fsp.mkdir(vendor, { recursive: true });
+  for (const name of ['inter.css', 'Inter-Variable.ttf']) {
+    await fsp.copyFile(path.join(__dirname, '../dist/vendor', name), path.join(vendor, name));
+  }
+  const post = (url, value) => server.raw(url, { method: 'POST', body: JSON.stringify(value) });
+  const render = await post('/api/render', { format: 'svg', documents: [{ name: 'Fixture', width: 50, height: 30, html: '<div>Fixture</div>' }] });
+  assert.equal(render.status, 200);
+  assert.match(render.headers.get('content-type'), /^image\/svg\+xml/);
+  assert.match(await render.text(), /<foreignObject/);
+  const invalidBundle = await post('/api/exports', {});
+  assert.equal(invalidBundle.status, 500);
+  assert.equal((await invalidBundle.json()).error, 'Incomplete project export');
+  const project = { pages: [{ id: 'page', component: { type: 'wrapper', components: [] } }] };
+  const bundleResponse = await post('/api/exports', { id: 'fixture', name: 'Fixture', project, html: '<div>Fixture</div>', css: '' });
+  assert.equal(bundleResponse.status, 200);
+  const bundle = await bundleResponse.json();
+  assert.equal(bundle.download, '/api/exports/fixture/download');
+  const download = await server.raw(bundle.download);
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get('content-type'), 'application/zip');
+  assert.equal(Buffer.from(await download.arrayBuffer()).subarray(0, 2).toString(), 'PK');
+  assert.equal((await server.raw('/api/exports/absent/download')).status, 404);
+  const missing = await server.raw('/api/projects/missing/assets/asset_00000000000000000000');
+  assert.equal(missing.status, 404);
 });
