@@ -138,24 +138,34 @@ test('workspace role matrix records permissions for common file actions', async 
   for (const role of roles.slice(1)) {
     assert.equal((await clients.owner.request(route + '/members', { email: `${role}@matrix.invalid`, role })).status, 200);
   }
+  const thread = await clients.owner.request(route + '/comments', { text: 'Original comment' });
+  const version = await clients.owner.request(route + '/versions', { name: 'Shared version' });
   const expected = {
-    owner:     { read: 200, members: 200, presence: 200, comment: 201, version: 201, branch: 201, audit: 200, library: 201 },
-    editor:    { read: 200, members: 200, presence: 200, comment: 201, version: 201, branch: 201, audit: 403, library: 403 },
-    commenter: { read: 200, members: 200, presence: 200, comment: 201, version: 403, branch: 403, audit: 403, library: 403 },
-    viewer:    { read: 200, members: 200, presence: 200, comment: 403, version: 403, branch: 403, audit: 403, library: 403 },
+    owner:     { read: 200, members: 200, presence: 200, comment: 201, reply: 200, version: 201, branch: 201, audit: 200, library: 201, edit: 200, membership: 200, deleteVersion: 200 },
+    editor:    { read: 200, members: 200, presence: 200, comment: 201, reply: 200, version: 201, branch: 201, audit: 403, library: 403, edit: 200, membership: 403, deleteVersion: 200 },
+    commenter: { read: 200, members: 200, presence: 200, comment: 201, reply: 200, version: 403, branch: 403, audit: 403, library: 403, edit: 403, membership: 403, deleteVersion: 403 },
+    viewer:    { read: 200, members: 200, presence: 200, comment: 403, reply: 403, version: 403, branch: 403, audit: 403, library: 403, edit: 403, membership: 403, deleteVersion: 403 },
   };
   for (const role of roles) {
     const client = clients[role];
+    const latest = await client.request(route);
+    // Each authorized deletion gets a separate version; denied attempts share a valid version.
+    const disposable = await clients.owner.request(route + '/versions', { name: `Delete ${role}` });
     const actual = {
       read: (await client.request(route)).status,
       members: (await client.request(route + '/members')).status,
       presence: (await client.request(route + '/presence', { clientId: `client-${role}` })).status,
       comment: (await client.request(route + '/comments', { text: 'Fixture comment' })).status,
+      reply: (await client.request(route + '/comments/' + thread.value.id, { text: 'Fixture reply' })).status,
       version: (await client.request(route + '/versions', { name: 'Fixture version' })).status,
       branch: (await client.request(route + '/branches', { name: 'Fixture branch' })).status,
       audit: (await client.request(route + '/audit')).status,
       library: (await client.request(route + '/library', { name: 'Fixture library' })).status,
+      edit: (await client.request(route + '/ops', { operationId: `matrix-${role}-operation`, baseRevision: latest.value.revision, changes: [{ kind: 'set', path: ['nodes', 'root', 'props', 'name'], value: role }] })).status,
+      membership: (await client.request(route + '/members', { email: 'viewer@matrix.invalid', role: 'viewer' })).status,
+      deleteVersion: (await client.request(route + '/versions/' + disposable.value.id, {}, 'DELETE')).status,
     };
     assert.deepEqual(actual, expected[role], `${role} permissions`);
   }
+  assert.equal((await clients.owner.request(route + '/versions/' + version.value.id)).status, 200);
 });
