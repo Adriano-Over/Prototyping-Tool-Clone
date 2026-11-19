@@ -415,12 +415,12 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     const variableModes = node.variableModeBySetMap ? normalizeVariableModes(node.variableModeBySetMap, id) : {};
     const stackLayout = normalizeFigStackLayout(node);
     if (!stackLayout && node.stackMode && !['NONE', 'UNKNOWN'].includes(String(node.stackMode).toUpperCase())) addDiagnostic({ severity: 'warning', code: 'LAYOUT_MODE_UNSUPPORTED', sourceNodeId: id, propertyPath: 'stackMode', reason: `Stack mode ${node.stackMode} does not have a Forma layout adapter yet.`, fallback: 'Source children and their saved coordinates remain available.' });
-    const supported = new Set(['FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL', 'RECTANGLE', 'ROUNDED_RECTANGLE', 'ELLIPSE', 'STAR', 'POLYGON', 'REGULAR_POLYGON', 'LINE', 'VECTOR', 'TEXT', 'BOOLEAN_OPERATION', 'SLICE']);
+    const supported = new Set(['FRAME', 'SECTION', 'GROUP', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL', 'RECTANGLE', 'ROUNDED_RECTANGLE', 'ELLIPSE', 'STAR', 'POLYGON', 'REGULAR_POLYGON', 'LINE', 'VECTOR', 'TEXT', 'BOOLEAN_OPERATION', 'SLICE']);
     if (!supported.has(type)) {
       unsupported.add(type || 'unknown');
       addDiagnostic({ severity: 'warning', code: 'NODE_TYPE_UNSUPPORTED', sourceNodeId: id, propertyPath: 'type', reason: `Node type ${type || 'unknown'} has no dedicated Forma renderer.`, fallback: 'Preserved as a basic editable layer.' });
     }
-    const component = { type: type === 'TEXT' ? 'text' : 'default', name: safeName(node.name), resizable: true, formaNodeId, attributes: { id: componentId, 'data-figma-node-id': id, 'data-figma-node-type': type } };
+    const component = { type: type === 'TEXT' ? 'text' : 'default', name: safeName(node.name), resizable: true, formaNodeId, attributes: { id: componentId, 'data-figma-node-id': id, 'data-figma-node-type': type, ...(type === 'SECTION' ? { 'data-forma-region': 'section' } : {}) } };
     if (Object.keys(variableModes).length) component.formaVariableModes = variableModes;
     const partPath = context.partPath || [];
     component.formaPartKey = cssId('fig-part', JSON.stringify([sourceBundle.documentId, context.componentRootSourceId || '', [...partPath, id]]));
@@ -589,6 +589,10 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     component.style = style;
     const explicitChildren = (resourceIndex.childrenByParent.get(id) || []).filter(child => child.phase !== 'REMOVED');
     let children = explicitChildren.map(child => makeNode(child, id, { x: 0, y: 0 }, { ...context, parentStackLayout: stackLayout, sourcePath: currentSourcePath, overridePath: currentOverridePath, partPath: [...partPath, id], parentFormaNodeId: formaNodeId })).filter(Boolean);
+    if (type === 'SECTION' && node.sectionContentsHidden === true) {
+      component.attributes['data-forma-section-contents-hidden'] = 'true';
+      for (const child of children) child.style = { ...child.style, display: 'none' };
+    }
     if (resolvedBoolean) {
       for (const operand of children) {
         operand.attributes['data-forma-boolean-operand'] = 'true';

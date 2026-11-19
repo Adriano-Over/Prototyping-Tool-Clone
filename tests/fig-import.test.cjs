@@ -196,6 +196,38 @@ test('Figma regular polygons import as editable SVG geometry without an unsuppor
   assert.equal(project.importSummary.diagnostics.some(item => item.code === 'NODE_TYPE_UNSUPPORTED' && item.sourceNodeId === id(81)), false);
 });
 
+test('Figma sections import as unclipped containers and honor hidden-content state', async () => {
+  const { importParsedFigDocument } = await import('../fig-import.mjs');
+  const page = { guid: guid(70), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
+  const section = {
+    guid: guid(71), type: 'SECTION', name: 'Components', phase: 'CREATED',
+    size: { x: 240, y: 160 }, transform: { m00: 1, m02: 20, m10: 0, m12: 30 },
+    frameMaskDisabled: true, sectionContentsHidden: true,
+  };
+  const child = {
+    guid: guid(72), type: 'RECTANGLE', name: 'Card', phase: 'CREATED',
+    parentIndex: { guid: section.guid, position: 'a' }, size: { x: 80, y: 40 },
+    transform: { m00: 1, m02: 8, m10: 0, m12: 8 },
+    fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 }, visible: true }],
+  };
+  const project = importParsedFigDocument({
+    nodes: [page, section, child],
+    childrenMap: new Map([[id(70), [section]], [id(71), [child]]]),
+    images: new Map(), meta: {}, header: { version: 101 },
+  });
+  const imported = project.editor.grapesjs.pages[0].frames[0].component.components[0];
+  const [importedChild] = imported.components;
+  assert.equal(imported.attributes['data-figma-node-type'], 'SECTION');
+  assert.equal(imported.attributes['data-forma-region'], 'section');
+  assert.equal(imported.attributes['data-forma-section-contents-hidden'], 'true');
+  assert.equal(imported.style.overflow, undefined, 'sections should not clip their contents');
+  assert.equal(importedChild.attributes['data-figma-node-type'], 'RECTANGLE');
+  assert.equal(importedChild.style.display, 'none', 'hidden section contents stay hidden on the Forma canvas');
+  assert.equal(project.forma.scene.nodes[importedChild.formaNodeId].visible, true, 'source layer visibility remains intact in scene metadata');
+  assert.equal(project.importSummary.unsupportedTypes.includes('SECTION'), false);
+  assert.equal(project.importSummary.diagnostics.some(item => item.code === 'NODE_TYPE_UNSUPPORTED' && item.sourceNodeId === id(71)), false);
+});
+
 test('imported centered vector strokes keep fractional origins and nominal layer bounds', async () => {
   const { importParsedFigDocument } = await import('../fig-import.mjs');
   const { preciseGeometryPath } = await import('../fig-import-vector-paint.mjs');
