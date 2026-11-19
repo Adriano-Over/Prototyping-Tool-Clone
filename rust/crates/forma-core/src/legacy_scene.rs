@@ -36,6 +36,136 @@ fn number(style: &Value, key: &str, path: &str) -> Result<f64, LegacyConversionE
         .ok_or_else(|| LegacyConversionError(format!("{path}: unsupported {key} geometry")))
 }
 
+fn origin_component(
+    token: &str,
+    extent: f64,
+    horizontal: bool,
+    path: &str,
+) -> Result<f64, LegacyConversionError> {
+    let token = token.trim().to_ascii_lowercase();
+    let parsed = match token.as_str() {
+        "center" => Some(extent / 2.0),
+        "left" if horizontal => Some(0.0),
+        "right" if horizontal => Some(extent),
+        "top" if !horizontal => Some(0.0),
+        "bottom" if !horizontal => Some(extent),
+        _ if token.ends_with('%') => token[..token.len() - 1]
+            .parse::<f64>()
+            .ok()
+            .map(|percent| extent * percent / 100.0),
+        _ => token
+            .strip_suffix("px")
+            .unwrap_or(&token)
+            .parse::<f64>()
+            .ok(),
+    };
+    parsed
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| LegacyConversionError(format!("{path}: unsupported transform-origin")))
+}
+
+fn transform_origin(
+    style: &Value,
+    width: f64,
+    height: f64,
+    path: &str,
+) -> Result<(f64, f64), LegacyConversionError> {
+    let Some(value) = style.get("transform-origin") else {
+        return Ok((width / 2.0, height / 2.0));
+    };
+    let text = value
+        .as_str()
+        .ok_or_else(|| LegacyConversionError(format!("{path}: unsupported transform-origin")))?;
+    let mut parts = text
+        .split_whitespace()
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    if parts.len() == 1 {
+        if parts[0] == "center" {
+            parts.push("center".into());
+        } else if matches!(parts[0].as_str(), "top" | "bottom") {
+            parts.insert(0, "center".into());
+        } else if matches!(parts[0].as_str(), "left" | "right") {
+            parts.push("center".into());
+        } else {
+            parts.insert(0, "center".into());
+        }
+    }
+    if parts.len() == 3 && matches!(parts[2].as_str(), "0" | "0px") {
+        parts.pop();
+    }
+    if parts.len() != 2 {
+        return Err(LegacyConversionError(format!(
+            "{path}: unsupported transform-origin"
+        )));
+    }
+    let (x_token, y_token) = match (parts[0].as_str(), parts[1].as_str()) {
+        ("top" | "bottom", "top" | "bottom") => {
+            return Err(LegacyConversionError(format!(
+                "{path}: unsupported transform-origin"
+            )))
+        }
+        ("top" | "bottom", _) => (parts[1].as_str(), parts[0].as_str()),
+        _ => (parts[0].as_str(), parts[1].as_str()),
+    };
+    Ok((
+        origin_component(x_token, width, true, path)?,
+        origin_component(y_token, height, false, path)?,
+    ))
+}
+
+fn css_transform(
+    style: &Value,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    path: &str,
+) -> Result<Affine, LegacyConversionError> {
+    let Some(value) = style.get("transform") else {
+        return Ok(Affine {
+            e: x,
+            f: y,
+            ..Default::default()
+        });
+    };
+    let text = value
+        .as_str()
+        .ok_or_else(|| LegacyConversionError(format!("{path}: unsupported CSS transform")))?;
+    if text.trim() == "none" {
+        return Ok(Affine {
+            e: x,
+            f: y,
+            ..Default::default()
+        });
+    }
+    let values = text
+        .trim()
+        .strip_prefix("matrix(")
+        .and_then(|inner| inner.strip_suffix(')'))
+        .ok_or_else(|| LegacyConversionError(format!("{path}: unsupported CSS transform")))?
+        .split(',')
+        .map(|part| part.trim().parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| LegacyConversionError(format!("{path}: invalid CSS matrix")))?;
+    if values.len() != 6 || values.iter().any(|value| !value.is_finite()) {
+        return Err(LegacyConversionError(format!("{path}: invalid CSS matrix")));
+    }
+    let [a, b, c, d, tx, ty] = values.as_slice() else {
+        unreachable!("matrix length validated")
+    };
+    let (ox, oy) = transform_origin(style, width, height, path)?;
+    Ok(Affine {
+        a: *a,
+        b: *b,
+        c: *c,
+        d: *d,
+        e: x + ox - a * ox - c * oy + tx,
+        f: y + oy - b * ox - d * oy + ty,
+        ..Default::default()
+    })
+}
+
 fn convert_node(
     value: &Value,
     path: &str,
@@ -85,14 +215,6 @@ fn convert_node(
         )));
     }
     if style
-        .get("transform")
-        .is_some_and(|v| v.as_str() != Some("none"))
-    {
-        return Err(LegacyConversionError(format!(
-            "{path}: CSS transforms require a dedicated adapter"
-        )));
-    }
-    if style
         .get("position")
         .is_some_and(|v| !matches!(v.as_str(), Some("absolute" | "static")))
     {
@@ -104,6 +226,7 @@ fn convert_node(
     let y = number(style, "top", path)?;
     let width = number(style, "width", path)?;
     let height = number(style, "height", path)?;
+    let transform = css_transform(style, x, y, width, height, path)?;
     if style.get("width").is_none() || style.get("height").is_none() {
         warnings.push(format!(
             "{path}: missing dimensions represented as zero; source retained"
@@ -111,7 +234,16 @@ fn convert_node(
     }
     if style.as_object().is_some_and(|items| {
         items.keys().any(|key| {
-            !["position", "left", "top", "width", "height", "transform"].contains(&key.as_str())
+            ![
+                "position",
+                "left",
+                "top",
+                "width",
+                "height",
+                "transform",
+                "transform-origin",
+            ]
+            .contains(&key.as_str())
         })
     }) {
         warnings.push(format!(
@@ -125,11 +257,7 @@ fn convert_node(
             .unwrap_or(kind_text)
             .into(),
         kind,
-        transform: Affine {
-            e: x,
-            f: y,
-            ..Default::default()
-        },
+        transform,
         size: Size {
             width,
             height,
@@ -353,6 +481,63 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unsupported width"));
+    }
+
+    #[test]
+    fn converts_css_matrices_with_explicit_and_default_origins() {
+        let source = json!({"pages":[{"component":{"type":"wrapper","style":{"width":"200px","height":"100px"},"components":[
+            {"type":"wrapper","style":{"left":"38px","top":"35px","width":"80px","height":"40px","transform":"matrix(2, 0.5, 0.25, 3, 0, 0)","transform-origin":"0 0"}},
+            {"type":"wrapper","style":{"left":10,"top":20,"width":16,"height":12,"transform":"matrix(0, 1, -1, 0, 0, 0)"}},
+            {"type":"wrapper","style":{"left":2,"top":3,"width":40,"height":20,"transform":"matrix(2, 0, 0, 2, 0, 0)","transform-origin":"top 25%"}}
+        ]}}]});
+        let report = LegacyProject::from_json(source)
+            .unwrap()
+            .project_simple_pages("id")
+            .unwrap();
+        let page = &report.project.pages[0];
+        let nodes = &page.nodes;
+        let first = &nodes[&nodes[&page.root].children[0]];
+        assert_eq!(
+            (
+                first.transform.a,
+                first.transform.b,
+                first.transform.c,
+                first.transform.d,
+                first.transform.e,
+                first.transform.f
+            ),
+            (2.0, 0.5, 0.25, 3.0, 38.0, 35.0)
+        );
+        let second = &nodes[&nodes[&page.root].children[1]];
+        assert_eq!(
+            (
+                second.transform.a,
+                second.transform.b,
+                second.transform.c,
+                second.transform.d,
+                second.transform.e,
+                second.transform.f
+            ),
+            (0.0, 1.0, -1.0, 0.0, 24.0, 18.0)
+        );
+        let third = &nodes[&nodes[&page.root].children[2]];
+        assert_eq!((third.transform.e, third.transform.f), (-8.0, 3.0));
+    }
+
+    #[test]
+    fn rejects_unsupported_or_malformed_css_transforms_and_origins() {
+        for (transform, origin) in [
+            ("matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)", "0 0"),
+            ("matrix(1,0,0,1,NaN,0)", "0 0"),
+            ("matrix(1,0,0,1,0)", "0 0"),
+            ("matrix(1,0,0,1,0,0)", "calc(50% - 2px) 0"),
+        ] {
+            let source = json!({"pages":[{"component":{"type":"wrapper","style":{"width":20,"height":10,"transform":transform,"transform-origin":origin}}}]});
+            assert!(LegacyProject::from_json(source)
+                .unwrap()
+                .project_simple_pages("id")
+                .is_err());
+        }
     }
 
     #[test]
