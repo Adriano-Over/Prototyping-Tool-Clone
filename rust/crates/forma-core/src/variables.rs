@@ -43,6 +43,7 @@ pub enum VariableError {
     MissingMode(String),
     Cycle(String),
     TypeMismatch(String),
+    InvalidLegacy(String),
 }
 
 impl fmt::Display for VariableError {
@@ -53,6 +54,110 @@ impl fmt::Display for VariableError {
 impl std::error::Error for VariableError {}
 
 impl VariableSet {
+    /// Reads defined variables and collection modes from Forma's legacy variable state.
+    ///
+    /// Legacy `modes` entries outside `definitions` are not yet converted.
+    /// The input JSON is borrowed and remains available to preserve all source data.
+    pub fn from_legacy_definitions(state: &serde_json::Value) -> Result<Self, VariableError> {
+        let definitions = match state.get("definitions") {
+            None => return Ok(Self::default()),
+            Some(value) => value.as_object().ok_or_else(|| {
+                VariableError::InvalidLegacy("definitions must be an object".into())
+            })?,
+        };
+        let mut result = Self::default();
+        let fallback_mode = state.get("mode").and_then(serde_json::Value::as_str);
+        let collections = state
+            .get("collections")
+            .and_then(serde_json::Value::as_object);
+        for (name, definition) in definitions {
+            let kind = match definition.get("type").and_then(serde_json::Value::as_str) {
+                Some("COLOR") => VariableKind::Color,
+                Some("NUMBER") => VariableKind::Number,
+                Some("STRING") => VariableKind::String,
+                Some("BOOLEAN") => VariableKind::Boolean,
+                _ => {
+                    return Err(VariableError::InvalidLegacy(format!(
+                        "{name}: unsupported variable type"
+                    )))
+                }
+            };
+            let collection = definition
+                .get("collectionId")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("legacy");
+            let selected = collections
+                .and_then(|items| items.get(collection))
+                .and_then(|item| item.get("mode"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|mode| !mode.is_empty())
+                .or(fallback_mode);
+            if let Some(mode) = selected {
+                result.modes.insert(collection.into(), mode.into());
+            }
+            let values = definition
+                .get("values")
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| {
+                    VariableError::InvalidLegacy(format!("{name}: values must be an object"))
+                })?;
+            let mut keys: Vec<_> = values.keys().collect();
+            // JavaScript enumerates array-index keys numerically before other keys.
+            keys.sort_by_key(|key| {
+                key.parse::<u32>()
+                    .ok()
+                    .filter(|n| *n != u32::MAX && n.to_string() == **key)
+                    .map_or((1, 0), |n| (0, n))
+            });
+            let mut converted = Vec::with_capacity(values.len());
+            for mode in keys {
+                let value = &values[mode];
+                let alias = value
+                    .as_object()
+                    .and_then(|item| item.get("alias"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|alias| !alias.is_empty())
+                    .or_else(|| {
+                        value
+                            .as_str()
+                            .and_then(|text| text.strip_prefix('@'))
+                            .filter(|alias| !alias.is_empty())
+                    });
+                let converted_value = if let Some(alias) = alias {
+                    VariableValue::Alias(alias.into())
+                } else {
+                    match kind {
+                        VariableKind::Color => {
+                            value.as_str().map(|v| VariableValue::Color(v.into()))
+                        }
+                        VariableKind::String => {
+                            value.as_str().map(|v| VariableValue::String(v.into()))
+                        }
+                        VariableKind::Number => value
+                            .as_f64()
+                            .filter(|v| v.is_finite())
+                            .map(VariableValue::Number),
+                        VariableKind::Boolean => value.as_bool().map(VariableValue::Boolean),
+                    }
+                    .ok_or_else(|| {
+                        VariableError::InvalidLegacy(format!("{name}:{mode}: unsupported value"))
+                    })?
+                };
+                converted.push((mode.clone(), converted_value));
+            }
+            result.variables.insert(
+                name.clone(),
+                Variable {
+                    kind,
+                    collection: collection.into(),
+                    values: converted,
+                },
+            );
+        }
+        Ok(result)
+    }
+
     /// Resolves aliases using the selected or overridden mode of each collection.
     pub fn resolve<'a>(
         &'a self,
@@ -239,6 +344,50 @@ mod tests {
                 &BTreeMap::from([("theme".into(), "missing".into())])
             ),
             Ok(&VariableValue::Color("#f00".into()))
+        );
+    }
+
+    #[test]
+    fn imports_defined_variables_and_preserves_legacy_mode_order() {
+        let source = r##"{"mode":"missing","collections":{"theme":{"mode":"missing"}},"definitions":{"surface":{"type":"COLOR","collectionId":"theme","values":{"z-first":"#f00","a-second":"#0f0"}},"alias":{"type":"COLOR","collectionId":"theme","values":{"z-first":{"alias":"surface"}}},"gap":{"type":"NUMBER","collectionId":"theme","values":{"z-first":12}}}}"##;
+        let input: serde_json::Value = serde_json::from_str(source).unwrap();
+        let variables = VariableSet::from_legacy_definitions(&input).unwrap();
+        assert_eq!(
+            variables.resolve("surface", &BTreeMap::new()),
+            Ok(&VariableValue::Color("#f00".into()))
+        );
+        assert_eq!(
+            variables.resolve("alias", &BTreeMap::new()),
+            Ok(&VariableValue::Color("#f00".into()))
+        );
+        assert_eq!(
+            variables.resolve(
+                "surface",
+                &BTreeMap::from([("theme".into(), "a-second".into())])
+            ),
+            Ok(&VariableValue::Color("#0f0".into()))
+        );
+        assert_eq!(
+            variables.resolve("gap", &BTreeMap::new()),
+            Ok(&VariableValue::Number(12.0))
+        );
+        assert_eq!(input["definitions"]["surface"]["values"]["z-first"], "#f00");
+    }
+
+    #[test]
+    fn reports_unsupported_legacy_values_and_respects_javascript_integer_key_order() {
+        let invalid =
+            serde_json::json!({"definitions":{"bad":{"type":"NUMBER","values":{"day":"12"}}}});
+        assert!(matches!(
+            VariableSet::from_legacy_definitions(&invalid),
+            Err(VariableError::InvalidLegacy(_))
+        ));
+        let raw = r#"{"definitions":{"n":{"type":"NUMBER","values":{"9":9,"2":2,"z":1}}}}"#;
+        let input: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let variables = VariableSet::from_legacy_definitions(&input).unwrap();
+        assert_eq!(
+            variables.resolve("n", &BTreeMap::new()),
+            Ok(&VariableValue::Number(2.0))
         );
     }
 }

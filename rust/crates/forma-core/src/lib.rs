@@ -83,6 +83,15 @@ impl LegacyProject {
         }
     }
 
+    /// Extracts explicitly defined variables from the original Forma metadata.
+    /// Legacy untyped values in `modes` are not yet included.
+    pub fn defined_variables(&self) -> Result<VariableSet, VariableError> {
+        match self.original.pointer("/forma/variables") {
+            Some(state) => VariableSet::from_legacy_definitions(state),
+            None => Ok(VariableSet::default()),
+        }
+    }
+
     /// Returns the original JSON, including fields unknown to Forma.
     pub fn into_json(self) -> Value {
         self.original
@@ -121,5 +130,17 @@ mod tests {
             serde_json::json!({"format":"forma-project","schemaVersion":4,"pages":[]})
         )
         .is_err());
+    }
+
+    #[test]
+    fn reads_defined_variables_from_a_legacy_project_without_changing_source() {
+        let original = serde_json::json!({"pages":[], "forma":{"variables":{"mode":"day","definitions":{"size":{"type":"NUMBER","collectionId":"theme","values":{"day":12}}}}}});
+        let project = LegacyProject::from_json(original.clone()).unwrap();
+        let variables = project.defined_variables().unwrap();
+        assert_eq!(
+            variables.resolve("size", &Default::default()),
+            Ok(&VariableValue::Number(12.0))
+        );
+        assert_eq!(project.into_json(), original);
     }
 }
