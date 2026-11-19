@@ -504,6 +504,10 @@ export function importParsedFigDocument(doc, filename = 'Imported Figma design',
     if (['FRAME', 'GROUP', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL'].includes(type) && node.frameMaskDisabled !== true) style.overflow = 'hidden';
     const radius = node.cornerRadius ?? node.rectangleTopLeftCornerRadius;
     if (type === 'ELLIPSE') style['border-radius'] = '50%';
+    else if (Array.isArray(node.rectangleCornerRadii) && node.rectangleCornerRadii.length === 4) {
+      const corners = node.rectangleCornerRadii.map(value => `${Math.max(0, Number(value ?? radius) || 0)}px`);
+      style['border-radius'] = corners.every(value => value === corners[0]) ? corners[0] : corners.join(' ');
+    }
     else if (node.rectangleCornerRadiiIndependent === true) {
       // CSS order is clockwise, starting from the top left.
       const corners = [node.rectangleTopLeftCornerRadius, node.rectangleTopRightCornerRadius, node.rectangleBottomRightCornerRadius, node.rectangleBottomLeftCornerRadius];

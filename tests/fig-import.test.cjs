@@ -228,6 +228,28 @@ test('Figma sections import as unclipped containers and honor hidden-content sta
   assert.equal(project.importSummary.diagnostics.some(item => item.code === 'NODE_TYPE_UNSUPPORTED' && item.sourceNodeId === id(71)), false);
 });
 
+test('Figma modern per-corner radius arrays map to CSS in clockwise order', async () => {
+  const { importParsedFigDocument } = await import('../fig-import.mjs');
+  const page = { guid: guid(50), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
+  const asymmetric = {
+    guid: guid(51), type: 'RECTANGLE', name: 'Asymmetric corners', phase: 'CREATED',
+    size: { x: 80, y: 40 }, transform: { m00: 1, m02: 0, m10: 0, m12: 0 },
+    rectangleCornerRadii: [8, 4, 12, 2],
+  };
+  const uniform = {
+    guid: guid(52), type: 'ROUNDED_RECTANGLE', name: 'Uniform corners', phase: 'CREATED',
+    size: { x: 60, y: 30 }, transform: { m00: 1, m02: 90, m10: 0, m12: 0 },
+    rectangleCornerRadii: [6, 6, 6, 6],
+  };
+  const project = importParsedFigDocument({
+    nodes: [page, asymmetric, uniform], childrenMap: new Map([[id(50), [asymmetric, uniform]]]),
+    images: new Map(), meta: {}, header: { version: 101 },
+  });
+  const [importedAsymmetric, importedUniform] = project.editor.grapesjs.pages[0].frames[0].component.components;
+  assert.equal(importedAsymmetric.style['border-radius'], '8px 4px 12px 2px');
+  assert.equal(importedUniform.style['border-radius'], '6px');
+});
+
 test('imported centered vector strokes keep fractional origins and nominal layer bounds', async () => {
   const { importParsedFigDocument } = await import('../fig-import.mjs');
   const { preciseGeometryPath } = await import('../fig-import-vector-paint.mjs');
