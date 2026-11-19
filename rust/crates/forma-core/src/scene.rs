@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// Two-dimensional affine transform: x' = a*x + c*y + e, y' = b*x + d*y + f.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Affine {
     pub a: f64,
     pub b: f64,
@@ -11,6 +11,9 @@ pub struct Affine {
     pub d: f64,
     pub e: f64,
     pub f: f64,
+    /// Fields not yet understood by the scene model.
+    #[serde(flatten)]
+    pub extras: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for Affine {
@@ -22,15 +25,19 @@ impl Default for Affine {
             d: 1.0,
             e: 0.0,
             f: 0.0,
+            extras: BTreeMap::new(),
         }
     }
 }
 
 /// Untransformed node dimensions.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Size {
     pub width: f64,
     pub height: f64,
+    /// Fields not yet understood by the scene model.
+    #[serde(flatten)]
+    pub extras: BTreeMap<String, serde_json::Value>,
 }
 
 /// Initial native scene node categories.
@@ -58,6 +65,9 @@ pub struct Node {
     pub visible: bool,
     pub locked: bool,
     pub children: Vec<String>,
+    /// Additional node properties retained during JSON round trips.
+    #[serde(flatten)]
+    pub extras: BTreeMap<String, serde_json::Value>,
 }
 
 /// A page stores a single rooted node tree keyed by stable IDs.
@@ -67,6 +77,9 @@ pub struct Page {
     pub name: String,
     pub root: String,
     pub nodes: BTreeMap<String, Node>,
+    /// Additional page properties retained during JSON round trips.
+    #[serde(flatten)]
+    pub extras: BTreeMap<String, serde_json::Value>,
 }
 
 /// A scene contains invalid geometry or hierarchy.
@@ -78,6 +91,7 @@ pub enum SceneError {
     Cycle(String),
     UnreachableNode(String),
     InvalidGeometry(String),
+    DuplicateField(String),
 }
 impl fmt::Display for SceneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -102,6 +116,13 @@ impl Page {
 
     /// Validates node references, geometry, cycles, and single-parent ownership.
     pub fn validate(&self) -> Result<(), SceneError> {
+        let check_extras = |extras: &BTreeMap<String, serde_json::Value>, reserved: &[&str]| {
+            if let Some(key) = extras.keys().find(|key| reserved.contains(&key.as_str())) {
+                return Err(SceneError::DuplicateField(key.clone()));
+            }
+            Ok(())
+        };
+        check_extras(&self.extras, &["id", "name", "root", "nodes"])?;
         if self.id.is_empty() || self.root.is_empty() || self.nodes.keys().any(String::is_empty) {
             return Err(SceneError::EmptyId);
         }
@@ -124,7 +145,21 @@ impl Page {
                 .nodes
                 .get(id)
                 .ok_or_else(|| SceneError::MissingNode(id.into()))?;
-            let t = node.transform;
+            check_extras(
+                &node.extras,
+                &[
+                    "name",
+                    "kind",
+                    "transform",
+                    "size",
+                    "visible",
+                    "locked",
+                    "children",
+                ],
+            )?;
+            check_extras(&node.transform.extras, &["a", "b", "c", "d", "e", "f"])?;
+            check_extras(&node.size.extras, &["width", "height"])?;
+            let t = &node.transform;
             if ![
                 t.a,
                 t.b,
@@ -166,10 +201,12 @@ mod tests {
             size: Size {
                 width: 10.0,
                 height: 10.0,
+                extras: BTreeMap::new(),
             },
             visible: true,
             locked: false,
             children: children.iter().map(|v| (*v).into()).collect(),
+            extras: BTreeMap::new(),
         }
     }
     fn page(nodes: &[(&str, Node)]) -> Page {
@@ -181,6 +218,7 @@ mod tests {
                 .iter()
                 .map(|(id, node)| ((*id).into(), node.clone()))
                 .collect(),
+            extras: BTreeMap::new(),
         }
     }
     #[test]
@@ -245,5 +283,29 @@ mod tests {
         let mut bad_geometry = page(&[("root", node(&[]))]);
         bad_geometry.nodes.get_mut("root").unwrap().size.height = -1.0;
         assert!(bad_geometry.to_json().is_err());
+    }
+
+    #[test]
+    fn json_round_trip_preserves_unknown_fields_at_each_scene_level() {
+        let mut source = serde_json::to_value(page(&[("root", node(&[]))])).unwrap();
+        source["future_page"] = serde_json::json!({"flags": [true, null]});
+        source["nodes"]["root"]["future_node"] = serde_json::json!({"fill": "custom"});
+        source["nodes"]["root"]["transform"]["future_transform"] = serde_json::json!(7);
+        source["nodes"]["root"]["size"]["future_size"] = serde_json::json!("x");
+        let loaded = Page::from_json(&source.to_string()).unwrap();
+        let restored: serde_json::Value = serde_json::from_str(&loaded.to_json().unwrap()).unwrap();
+        assert_eq!(restored, source);
+    }
+
+    #[test]
+    fn rejects_extra_fields_that_shadow_known_fields() {
+        let mut p = page(&[("root", node(&[]))]);
+        p.nodes
+            .get_mut("root")
+            .unwrap()
+            .extras
+            .insert("name".into(), serde_json::json!("other"));
+        assert_eq!(p.validate(), Err(SceneError::DuplicateField("name".into())));
+        assert!(p.to_json().is_err());
     }
 }
