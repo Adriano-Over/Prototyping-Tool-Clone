@@ -178,10 +178,37 @@ function vectorPathsToSvg(paths, { width = 1, height = 1, strokeWeight = 1, stro
   const lineCap = ({ ROUND: 'round', SQUARE: 'square', NONE: 'butt' })[String(strokeCap).toUpperCase()] || 'butt';
   const lineJoin = ({ ROUND: 'round', BEVEL: 'bevel', MITER: 'miter' })[String(strokeJoin).toUpperCase()] || 'miter';
   const pathAttributes = entry => `d="${entry.svgPath.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}" fill-rule="${entry.windingRule === 'ODD' ? 'evenodd' : 'nonzero'}"`;
-  const serialize = (entry, isStroke) => {
-    const paint = (entry.paints || []).find(item => item?.visible !== false);
+  const definitions = [];
+  const paintFor = paint => {
+    if (paint?.type === 'SOLID') return paintColor?.(paint.colorVar?.value?.alias?.assetRef, colorCss(paint.color)) || colorCss(paint.color);
+    if (!['GRADIENT_LINEAR', 'GRADIENT_RADIAL'].includes(paint?.type) || !paint.stops?.length) return 'none';
+    const geometry = resolveGradientGeometry(
+      { type: paint.type === 'GRADIENT_LINEAR' ? 'linear' : 'radial', transform: paint.transform },
+      width, height,
+    );
+    if (!geometry) return 'none';
+    const id = `vector-gradient-${definitions.length}`;
+    const stops = paint.stops.map((stop, index) => {
+      const color = paintColor?.(paint.stopsVar?.[index]?.colorVar?.value?.alias?.assetRef, colorCss(stop.color)) || colorCss(stop.color);
+      const position = Math.max(0, Math.min(1, Number(stop.position ?? 0)));
+      return `<stop offset="${cssNumber(position * 100)}%" stop-color="${String(color).replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"/>`;
+    }).join('');
+    if (geometry.type === 'linear') {
+      definitions.push(`<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${cssNumber(geometry.start.x)}" y1="${cssNumber(geometry.start.y)}" x2="${cssNumber(geometry.end.x)}" y2="${cssNumber(geometry.end.y)}">${stops}</linearGradient>`);
+    } else {
+      const transform = paint.transform || { m00: 1, m01: 0, m02: 0, m10: 0, m11: 1, m12: 0 };
+      const det = transform.m00 * transform.m11 - transform.m10 * transform.m01;
+      const ia = transform.m11 / det, ic = -transform.m01 / det;
+      const ib = -transform.m10 / det, iid = transform.m00 / det;
+      // Preserve the complete transformed ellipse, including gradient shear.
+      const matrix = [ia * width / 2, ib * height / 2, ic * width / 2, iid * height / 2, geometry.center.x, geometry.center.y].map(cssNumber).join(' ');
+      definitions.push(`<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(${matrix})">${stops}</radialGradient>`);
+    }
+    return `url(#${id})`;
+  };
+  const serialize = (entry, isStroke, paint) => {
     if (!entry.svgPath) return '';
-    const resolvedColor = paint?.type === 'SOLID' ? (paintColor?.(paint) || colorCss(paint.color)) : 'none';
+    const resolvedColor = paintFor(paint);
     const strokeWidth = isStroke ? Math.max(0.1, Number(strokeWeight || 1)) : 0;
     const opacity = Number(paint?.opacity ?? 1);
     const fill = isStroke ? 'none' : resolvedColor;
@@ -189,8 +216,12 @@ function vectorPathsToSvg(paths, { width = 1, height = 1, strokeWeight = 1, stro
     return `<path ${pathAttributes(entry)} fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"${isStroke ? ` stroke-opacity="${opacity}" stroke-linecap="${lineCap}" stroke-linejoin="${lineJoin}"` : ` fill-opacity="${opacity}"`}/>`;
   };
   const fills = (paths.fill || []).filter(entry => entry.svgPath);
-  const fill = fills.map(entry => serialize(entry, false)).join('');
-  let stroke = (paths.stroke || []).map(entry => serialize(entry, !expandedStroke)).join('');
+  const paintEntries = entry => {
+    const paints = (entry.paints || []).filter(paint => paint?.visible !== false && Number(paint?.opacity ?? 1) > 0);
+    return paints.length ? paints : [null];
+  };
+  const fill = fills.map(entry => paintEntries(entry).map(paint => serialize(entry, false, paint)).join('')).join('');
+  let stroke = (paths.stroke || []).map(entry => paintEntries(entry).map(paint => serialize(entry, !expandedStroke, paint)).join('')).join('');
   if (stroke && expandedStroke && fills.length && ['INSIDE', 'OUTSIDE'].includes(strokeAlign)) {
     const inside = strokeAlign === 'INSIDE';
     const silhouette = fills.map(entry => `<path ${pathAttributes(entry)} fill="${inside ? 'white' : 'black'}"/>`).join('');
@@ -199,7 +230,8 @@ function vectorPathsToSvg(paths, { width = 1, height = 1, strokeWeight = 1, stro
   }
   const body = fill + stroke;
   if (!body) return null;
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${body}</svg>`;
+  const defs = definitions.length ? `<defs>${definitions.join('')}</defs>` : '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${defs}${body}</svg>`;
 }
 
 const svgDataUrl = svg => `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
@@ -210,9 +242,6 @@ export function vectorPathsToDataUrl(paths, options = {}) {
 }
 
 function svgForVector(paths, node, variableIdByAssetRef) {
-  const isBoolean = node.type === 'BOOLEAN_OPERATION';
-  if (isBoolean && [...paths.fill, ...paths.stroke].some(entry =>
-    entry.paints?.some(paint => paint.visible !== false && paint.type !== 'SOLID'))) return null;
   const options = {
     width: node.size?.x,
     height: node.size?.y,
@@ -228,10 +257,9 @@ function svgForVector(paths, node, variableIdByAssetRef) {
   const tokenByVariableId = new Map();
   const svg = vectorPathsToSvg(paths, {
     ...options,
-    paintColor: paint => {
-      const ref = paint?.colorVar?.value?.alias?.assetRef;
+    paintColor: (ref, fallback) => {
       const id = ref?.key ? variableIdByAssetRef.get(`${ref.key}:${ref.version || ''}`) : null;
-      if (!id) return null;
+      if (!id) return fallback;
       if (!tokenByVariableId.has(id)) {
         const token = `__FORMA_VARIABLE_${variables.length}__`;
         tokenByVariableId.set(id, token);

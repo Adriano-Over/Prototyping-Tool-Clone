@@ -196,6 +196,74 @@ test('Figma regular polygons import as editable SVG geometry without an unsuppor
   assert.equal(project.importSummary.diagnostics.some(item => item.code === 'NODE_TYPE_UNSUPPORTED' && item.sourceNodeId === id(81)), false);
 });
 
+test('Figma vector gradient fills remain visible as editable SVG gradients', async () => {
+  const { importParsedFigDocument, vectorPathsToDataUrl } = await import('../fig-import.mjs');
+  const { encodeCommandsBlob, parseSVGPathData } = await import('openfig-core');
+  const page = { guid: guid(82), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
+  const gradient = {
+    type: 'GRADIENT_LINEAR', opacity: 1, visible: true,
+    transform: { m00: 0, m01: 1, m02: 0, m10: -1, m11: 0, m12: 1 },
+    stops: [
+      { color: { r: 1, g: 0, b: 0, a: 1 }, position: 0 },
+      { color: { r: 0, g: 0, b: 1, a: 1 }, position: 1 },
+    ],
+  };
+  const vector = {
+    guid: guid(83), type: 'VECTOR', name: 'Gradient icon', phase: 'CREATED',
+    size: { x: 20, y: 10 }, transform: { m00: 1, m11: 1 },
+    fillPaints: [gradient], fillGeometry: [{ commandsBlob: 0, windingRule: 'NONZERO' }],
+  };
+  const boolean = {
+    guid: guid(84), type: 'BOOLEAN_OPERATION', name: 'Gradient boolean', phase: 'CREATED',
+    size: { x: 20, y: 10 }, transform: { m00: 1, m11: 1 },
+    fillPaints: [
+      { type: 'SOLID', visible: true, opacity: 1, color: { r: 0, g: 0, b: 0, a: 1 } },
+      { type: 'SOLID', visible: true, opacity: 1, color: { r: 1, g: 1, b: 1, a: 1 } },
+      { ...gradient, opacity: 0.35 },
+    ], fillGeometry: [{ commandsBlob: 0, windingRule: 'ODD' }],
+  };
+  const blob = encodeCommandsBlob(parseSVGPathData('M0 0L20 0L20 10L0 10Z'));
+  const project = importParsedFigDocument({
+    nodes: [page, vector, boolean], childrenMap: new Map([[id(82), [vector, boolean]]]),
+    images: new Map(), message: { blobs: [blob] }, header: { version: 101 },
+  });
+  const [imported, importedBoolean] = project.editor.grapesjs.pages[0].frames[0].component.components;
+  const svg = Buffer.from(imported.attributes.src.split(',')[1], 'base64').toString('utf8');
+  assert.match(svg, /<linearGradient id="vector-gradient-0" gradientUnits="userSpaceOnUse"/);
+  assert.match(svg, /x1="10" y1="0" x2="10" y2="10"/);
+  assert.match(svg, /<stop offset="0%" stop-color="rgba\(255, 0, 0, 1\)"\/>/);
+  assert.match(svg, /<stop offset="100%" stop-color="rgba\(0, 0, 255, 1\)"\/>/);
+  assert.match(svg, /fill="url\(#vector-gradient-0\)"/);
+  assert.equal(project.importSummary.unsupportedTypes.includes('VECTOR'), false);
+  const booleanUrl = importedBoolean.style['background-image'].match(/url\("data:image\/svg\+xml;base64,([^\"]+)"\)/)?.[1];
+  assert.ok(booleanUrl, 'Boolean gradient result is rendered from its saved path');
+  const booleanSvg = Buffer.from(booleanUrl, 'base64').toString('utf8');
+  assert.match(booleanSvg, /<linearGradient\b/);
+  assert.match(booleanSvg, /fill="url\(#vector-gradient-0\)"/);
+  assert.match(booleanSvg, /fill-opacity="0\.35"/);
+  assert.equal((booleanSvg.match(/<path\b/g) || []).length, 3, 'every visible paint is retained in source stack order');
+
+  const radialUrl = vectorPathsToDataUrl({
+    fill: [{ svgPath: 'M0 0L20 0L20 10Z', paints: [{
+      type: 'GRADIENT_RADIAL', visible: true, opacity: 1,
+      transform: { m00: 0.5, m01: 0, m02: 0.25, m10: 0, m11: 0.5, m12: 0.25 },
+      stops: [{ color: { r: 1, g: 1, b: 1, a: 1 }, position: 0 }, { color: { r: 0, g: 0, b: 0, a: 1 }, position: 1 }],
+    }] }],
+  }, { width: 20, height: 10 });
+  const radial = Buffer.from(radialUrl.split(',')[1], 'base64').toString('utf8');
+  assert.match(radial, /<radialGradient id="vector-gradient-0" gradientUnits="userSpaceOnUse"/);
+  assert.match(radial, /gradientTransform="matrix\(20 0 0 10 10 5\)"/);
+  assert.match(radial, /fill="url\(#vector-gradient-0\)"/);
+
+  const shearedUrl = vectorPathsToDataUrl({ fill: [{ svgPath: 'M0 0L20 0L20 10Z', paints: [{
+    type: 'GRADIENT_RADIAL', visible: true, opacity: 1,
+    transform: { m00: 1, m01: 0.25, m02: 0, m10: 0, m11: 1, m12: 0 },
+    stops: [{ color: { r: 1, g: 1, b: 1, a: 1 }, position: 0 }, { color: { r: 0, g: 0, b: 0, a: 1 }, position: 1 }],
+  }] }] }, { width: 20, height: 10 });
+  const sheared = Buffer.from(shearedUrl.split(',')[1], 'base64').toString('utf8');
+  assert.match(sheared, /gradientTransform="matrix\(10 0 -2\.5 5 7\.5 5\)"/);
+});
+
 test('Figma sections import as unclipped containers and honor hidden-content state', async () => {
   const { importParsedFigDocument } = await import('../fig-import.mjs');
   const page = { guid: guid(70), type: 'CANVAS', name: 'Page 1', phase: 'CREATED' };
