@@ -1,6 +1,6 @@
 # Rust migration workspace
 
-This workspace is an incremental migration alongside the current Forma editor. The initial `forma-core` crate validates legacy project envelopes and retains their original JSON, including unknown fields. It also provides a shared undo/redo history for commands that set or remove existing-parent JSON object properties. This is a foundation, not yet integrated with the editor or a complete set of design commands. The native document model, storage, and server remain to be implemented.
+This workspace is an incremental migration alongside the current Forma editor. The initial `forma-core` crate validates legacy project envelopes and retains their original JSON, including unknown fields. It also provides a shared undo/redo history for commands that set or remove existing-parent JSON object properties. This is a foundation, not yet integrated with the editor or a complete set of design commands. Initial typed pages and nodes support hierarchy and geometry validation; conversion, serialization, styling, storage, and the server remain to be implemented.
 
 Variable aliases can be resolved across collections and selected modes, with errors for cycles, missing values, and type mismatches. This typed API is not yet connected to legacy project data. Unlike the existing JavaScript resolver, it currently reports a missing mode instead of falling back to the first available value; legacy compatibility requires an adapter and parity checks.
 
