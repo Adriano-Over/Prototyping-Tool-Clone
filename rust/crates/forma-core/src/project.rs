@@ -1,4 +1,4 @@
-use crate::{LegacyProject, Page, SceneError};
+use crate::{Page, SceneError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -7,15 +7,18 @@ use std::fmt;
 /// Experimental native project container; this is not yet Forma's disk format.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
-    pub id: String,
-    pub name: String,
-    pub revision: u64,
-    pub pages: Vec<Page>,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) revision: u64,
+    pub(crate) pages: Vec<Page>,
     /// Original legacy envelope retained until conversion can be proven lossless.
-    pub legacy: Option<Value>,
+    pub(crate) legacy: Option<Value>,
+    /// Revision at which the retained legacy snapshot was captured, if known.
+    #[serde(default)]
+    pub(crate) legacy_snapshot_revision: Option<u64>,
     /// Unrecognized project-level data, retained during round trips.
     #[serde(flatten)]
-    pub extras: BTreeMap<String, Value>,
+    pub(crate) extras: BTreeMap<String, Value>,
 }
 
 /// A native project has invalid metadata or page contents.
@@ -26,6 +29,7 @@ pub enum ProjectModelError {
     DuplicatePageId(String),
     InvalidPage { id: String, error: SceneError },
     DuplicateField(String),
+    RevisionOverflow,
 }
 
 impl fmt::Display for ProjectModelError {
@@ -36,9 +40,58 @@ impl fmt::Display for ProjectModelError {
 impl std::error::Error for ProjectModelError {}
 
 impl Project {
-    /// Attaches a validated legacy envelope without changing its contents.
-    pub fn retain_legacy(&mut self, legacy: LegacyProject) {
-        self.legacy = Some(legacy.into_json());
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn pages(&self) -> &[Page] {
+        &self.pages
+    }
+
+    pub fn legacy_snapshot(&self) -> Option<&Value> {
+        self.legacy.as_ref()
+    }
+
+    pub fn extras(&self) -> &BTreeMap<String, Value> {
+        &self.extras
+    }
+
+    /// True only when the retained legacy payload was captured at the current revision.
+    /// Older serialized projects without this marker are treated conservatively as stale.
+    pub fn legacy_snapshot_is_current(&self) -> bool {
+        self.legacy.is_some() && self.legacy_snapshot_revision == Some(self.revision)
+    }
+
+    /// Applies a page edit atomically, validates it, advances the revision, and marks
+    /// the retained legacy snapshot stale by keeping its original capture revision.
+    pub fn edit_pages(
+        &mut self,
+        edit: impl FnOnce(&mut Vec<Page>),
+    ) -> Result<(), ProjectModelError> {
+        let mut pages = self.pages.clone();
+        edit(&mut pages);
+        if pages == self.pages {
+            return Ok(());
+        }
+
+        let next_revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(ProjectModelError::RevisionOverflow)?;
+        let mut staged = self.clone();
+        staged.pages = pages;
+        staged.revision = next_revision;
+        staged.validate()?;
+        *self = staged;
+        Ok(())
     }
 
     /// Validates project identity and each page's hierarchy and geometry.
@@ -49,11 +102,17 @@ impl Project {
         if self.pages.is_empty() {
             return Err(ProjectModelError::NoPages);
         }
-        if let Some(key) = self
-            .extras
-            .keys()
-            .find(|key| ["id", "name", "revision", "pages", "legacy"].contains(&key.as_str()))
-        {
+        if let Some(key) = self.extras.keys().find(|key| {
+            [
+                "id",
+                "name",
+                "revision",
+                "pages",
+                "legacy",
+                "legacy_snapshot_revision",
+            ]
+            .contains(&key.as_str())
+        }) {
             return Err(ProjectModelError::DuplicateField(key.clone()));
         }
         let mut ids = BTreeSet::new();
@@ -117,6 +176,7 @@ mod tests {
                 extras: BTreeMap::new(),
             }],
             legacy: None,
+            legacy_snapshot_revision: None,
             extras: BTreeMap::new(),
         }
     }
@@ -125,12 +185,74 @@ mod tests {
     fn preserves_legacy_and_future_fields_across_project_round_trip() {
         let source = json!({"pages":[],"handoff":{"custom":"unchanged"}});
         let mut p = project();
-        p.retain_legacy(LegacyProject::from_json(source.clone()).unwrap());
+        p.legacy = Some(source.clone());
+        p.legacy_snapshot_revision = None;
         p.extras.insert("future".into(), json!({"enabled":true}));
         let restored = Project::from_json(&p.to_json().unwrap()).unwrap();
         assert_eq!(restored, p);
-        assert_eq!(restored.legacy, Some(source));
+        assert_eq!(restored.legacy_snapshot(), Some(&source));
+        assert!(!restored.legacy_snapshot_is_current());
         assert_eq!(restored.revision, 7);
+    }
+
+    #[test]
+    fn page_edits_advance_revision_and_make_the_legacy_snapshot_stale_without_discarding_it() {
+        let source = json!({"pages":[],"handoff":{"custom":"unchanged"}});
+        let mut p = project();
+        p.legacy = Some(source.clone());
+        p.legacy_snapshot_revision = Some(p.revision);
+        assert!(p.legacy_snapshot_is_current());
+
+        p.edit_pages(|pages| {
+            pages[0].nodes.get_mut("root").unwrap().name = "Edited".into();
+        })
+        .unwrap();
+
+        assert_eq!(p.revision(), 8);
+        assert_eq!(p.pages()[0].nodes["root"].name, "Edited");
+        assert_eq!(p.legacy_snapshot(), Some(&source));
+        assert!(!p.legacy_snapshot_is_current());
+
+        let restored = Project::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(restored.legacy_snapshot(), Some(&source));
+        assert!(!restored.legacy_snapshot_is_current());
+    }
+
+    #[test]
+    fn invalid_page_edits_are_atomic_and_noops_do_not_change_revision() {
+        let mut p = project();
+        let original = p.clone();
+        p.edit_pages(|_| {}).unwrap();
+        assert_eq!(p, original);
+
+        assert_eq!(p.edit_pages(Vec::clear), Err(ProjectModelError::NoPages));
+        assert_eq!(p, original);
+    }
+
+    #[test]
+    fn projects_without_a_legacy_capture_revision_are_treated_as_stale() {
+        let mut value = serde_json::to_value(project()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("legacy_snapshot_revision");
+        value["legacy"] = json!({"pages":[]});
+
+        let restored = Project::from_json(&value.to_string()).unwrap();
+        assert!(!restored.legacy_snapshot_is_current());
+    }
+
+    #[test]
+    fn revision_overflow_does_not_apply_a_page_edit() {
+        let mut p = project();
+        p.revision = u64::MAX;
+        let original = p.clone();
+
+        assert_eq!(
+            p.edit_pages(|pages| pages[0].name = "Changed".into()),
+            Err(ProjectModelError::RevisionOverflow)
+        );
+        assert_eq!(p, original);
     }
 
     #[test]

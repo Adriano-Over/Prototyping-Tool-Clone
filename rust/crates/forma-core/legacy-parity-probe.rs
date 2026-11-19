@@ -10,8 +10,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let report = LegacyProject::from_json(source)?.project_simple_pages("parity-probe")?;
     let editor = report
         .project
-        .legacy
-        .as_ref()
+        .legacy_snapshot()
         .and_then(|legacy| legacy.pointer("/editor/grapesjs"))
         .cloned()
         .ok_or("Forma editor payload was not retained")?;
@@ -19,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "{}",
         serde_json::to_string(&json!({
             "editor": editor,
-            "pages": report.project.pages,
+            "pages": report.project.pages(),
             "warnings": report.warnings
         }))?
     );

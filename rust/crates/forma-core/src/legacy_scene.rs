@@ -1100,6 +1100,7 @@ impl LegacyProject {
                 extras: BTreeMap::new(),
             });
         }
+        let revision = source.get("revision").and_then(Value::as_u64).unwrap_or(0);
         let project = Project {
             id: source
                 .get("id")
@@ -1112,9 +1113,10 @@ impl LegacyProject {
                 .and_then(Value::as_str)
                 .unwrap_or("Untitled project")
                 .into(),
-            revision: source.get("revision").and_then(Value::as_u64).unwrap_or(0),
+            revision,
             pages: converted,
             legacy: Some(source),
+            legacy_snapshot_revision: Some(revision),
             extras: BTreeMap::new(),
         };
         project
@@ -1157,6 +1159,7 @@ mod tests {
             .project_simple_pages("fallback")
             .unwrap();
         let page = &report.project.pages[0];
+        assert!(report.project.legacy_snapshot_is_current());
         let frame = &page.nodes[&page.root];
         let section = &page.nodes[&frame.children[0]];
         assert_eq!((frame.size.width, frame.size.height), (1024.0, 3368.0));
