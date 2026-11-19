@@ -100,3 +100,27 @@ test('migration contract records SVG rendering, bundle download and failure resp
   const missing = await server.raw('/api/projects/missing/assets/asset_00000000000000000000');
   assert.equal(missing.status, 404);
 });
+
+test('migration contract captures workspace authentication and access failures', async t => {
+  const server = await start(t);
+  const owner = server.account(), viewer = server.account();
+  const password = 'Synthetic-password-123';
+  assert.equal((await owner.request('/auth/register', { email: 'invalid', password })).status, 400);
+  assert.equal((await owner.request('/auth/register', { email: 'owner@example.invalid', password })).status, 200);
+  assert.equal((await viewer.request('/auth/register', { email: 'viewer@example.invalid', password })).status, 200);
+  assert.equal((await owner.request('/auth/register', { email: 'owner@example.invalid', password })).status, 409);
+  const project = { name: 'Fixture', editor: { grapesjs: { pages: [{ id: 'page', component: { type: 'wrapper', components: [] } }] } } };
+  const route = '/files/' + (await owner.request('/files', { project })).value.id;
+  assert.equal((await viewer.request(route)).status, 404);
+  assert.equal((await owner.request(route + '/members', { email: 'viewer@example.invalid', role: 'viewer' })).status, 200);
+  assert.equal((await viewer.request(route)).status, 200);
+  assert.equal((await viewer.request(route + '/members')).status, 200);
+  assert.equal((await viewer.request(route + '/audit')).status, 403);
+  assert.equal((await viewer.request(route + '/library', { name: 'Denied' })).status, 403);
+  assert.equal((await viewer.request(route + '/versions', { name: 'Denied' })).status, 403);
+  assert.equal((await viewer.request(route + '/branches', { name: 'Denied' })).status, 403);
+  assert.equal((await viewer.request(route + '/presence', { clientId: 'bad' })).status, 400);
+  assert.equal((await owner.request(route + '/ops', { operationId: 'invalid' })).status, 400);
+  assert.equal((await owner.request(route + '/comments', { text: '' })).status, 400);
+  assert.equal((await owner.request(route + '/members', { email: 'viewer@example.invalid', role: 'owner' })).status, 400);
+});
