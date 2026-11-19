@@ -237,6 +237,35 @@ impl ProjectHistory {
         .map(|_| ())
     }
 
+    /// Sets a node's local affine transform by stable page and node IDs.
+    pub fn set_node_transform(
+        &mut self,
+        project: &mut crate::Project,
+        page_id: &str,
+        node_id: &str,
+        transform: crate::Affine,
+    ) -> Result<(), HistoryError> {
+        let page_index = project
+            .pages()
+            .iter()
+            .position(|page| page.id == page_id)
+            .ok_or(HistoryError("Project history page ID was not found"))?;
+        if !project.pages()[page_index].nodes.contains_key(node_id) {
+            return Err(HistoryError("Project history node ID was not found"));
+        }
+        let value = serde_json::to_value(transform)
+            .map_err(|_| HistoryError("Project history could not encode the node transform"))?;
+        let escaped_node_id = node_id.replace('~', "~0").replace('/', "~1");
+        self.execute(
+            project,
+            Command::Set {
+                parent: format!("/pages/{page_index}/nodes/{escaped_node_id}"),
+                key: "transform".into(),
+                value,
+            },
+        )
+    }
+
     pub fn undo(&mut self, project: &mut crate::Project) -> Result<bool, HistoryError> {
         self.apply(project, |history, document| history.undo(document))
     }
@@ -677,6 +706,84 @@ mod tests {
 
         assert_eq!(project.revision(), 3);
         assert!(project.legacy_snapshot_is_current());
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn typed_transform_command_uses_stable_ids_and_round_trips_through_history() {
+        let mut project = project_with_snapshot();
+        let node_id = "layer/one~two";
+        project.pages[0].nodes.insert(
+            node_id.into(),
+            Node {
+                name: "Layer".into(),
+                kind: NodeKind::Rectangle,
+                transform: Affine::default(),
+                size: Size {
+                    width: 12.0,
+                    height: 8.0,
+                    extras: BTreeMap::new(),
+                },
+                visible: true,
+                locked: false,
+                children: vec![],
+                extras: BTreeMap::new(),
+            },
+        );
+        project.pages[0]
+            .nodes
+            .get_mut("root")
+            .unwrap()
+            .children
+            .push(node_id.into());
+        let mut history = ProjectHistory::default();
+        let moved = Affine {
+            e: 24.0,
+            f: -9.0,
+            ..Affine::default()
+        };
+
+        history
+            .set_node_transform(&mut project, "page", node_id, moved.clone())
+            .unwrap();
+        assert_eq!(project.pages()[0].nodes[node_id].transform, moved);
+        assert_eq!(project.revision(), 4);
+
+        assert!(history.undo(&mut project).unwrap());
+        assert_eq!(
+            project.pages()[0].nodes[node_id].transform,
+            Affine::default()
+        );
+        assert_eq!(project.revision(), 5);
+        assert!(history.redo(&mut project).unwrap());
+        assert_eq!(project.pages()[0].nodes[node_id].transform.e, 24.0);
+        assert_eq!(project.revision(), 6);
+    }
+
+    #[test]
+    fn typed_transform_command_rejects_missing_ids_and_non_finite_geometry() {
+        let mut project = project_with_snapshot();
+        let original = project.clone();
+        let mut history = ProjectHistory::default();
+
+        assert!(history
+            .set_node_transform(&mut project, "missing-page", "root", Affine::default())
+            .is_err());
+        assert!(history
+            .set_node_transform(&mut project, "page", "missing-node", Affine::default())
+            .is_err());
+        assert!(history
+            .set_node_transform(
+                &mut project,
+                "page",
+                "root",
+                Affine {
+                    e: f64::NAN,
+                    ..Affine::default()
+                },
+            )
+            .is_err());
+        assert_eq!(project, original);
         assert!(!history.can_undo());
     }
 }
