@@ -25,7 +25,8 @@ pub enum VariableValue {
 pub struct Variable {
     pub kind: VariableKind,
     pub collection: String,
-    pub values: BTreeMap<String, VariableValue>,
+    /// Mode values in authored order; the first value is the legacy fallback.
+    pub values: Vec<(String, VariableValue)>,
 }
 
 /// A collection of variables and the selected mode for each collection.
@@ -75,11 +76,17 @@ impl VariableSet {
             expected = Some(variable.kind);
             let mode = overrides
                 .get(&variable.collection)
-                .or_else(|| self.modes.get(&variable.collection))
+                .filter(|mode| !mode.is_empty())
+                .or_else(|| {
+                    self.modes
+                        .get(&variable.collection)
+                        .filter(|mode| !mode.is_empty())
+                });
+            let value = mode
+                .and_then(|mode| variable.values.iter().find(|(name, _)| name == mode))
+                .or_else(|| variable.values.first())
+                .map(|(_, value)| value)
                 .ok_or_else(|| VariableError::MissingMode(variable.collection.clone()))?;
-            let value = variable.values.get(mode).ok_or_else(|| {
-                VariableError::MissingMode(format!("{}:{mode}", variable.collection))
-            })?;
             match value {
                 VariableValue::Alias(target) => current = target,
                 literal => {
@@ -192,9 +199,46 @@ mod tests {
             set.resolve("a", &BTreeMap::new()),
             Err(VariableError::TypeMismatch(_))
         ));
-        assert!(matches!(
+        assert_eq!(
             set.resolve("b", &BTreeMap::from([("theme".into(), "night".into())])),
+            Ok(&VariableValue::Boolean(true))
+        );
+        set.variables.get_mut("b").unwrap().values.clear();
+        assert!(matches!(
+            set.resolve("b", &BTreeMap::new()),
             Err(VariableError::MissingMode(_))
         ));
+    }
+
+    #[test]
+    fn missing_mode_uses_first_authored_value_not_alphabetical_order() {
+        let mut set = VariableSet::default();
+        set.variables.insert(
+            "surface".into(),
+            variable(
+                VariableKind::Color,
+                "theme",
+                &[
+                    ("z-first", VariableValue::Color("#f00".into())),
+                    ("a-second", VariableValue::Color("#0f0".into())),
+                ],
+            ),
+        );
+        assert_eq!(
+            set.resolve("surface", &BTreeMap::new()),
+            Ok(&VariableValue::Color("#f00".into()))
+        );
+        set.modes.insert("theme".into(), "a-second".into());
+        assert_eq!(
+            set.resolve("surface", &BTreeMap::new()),
+            Ok(&VariableValue::Color("#0f0".into()))
+        );
+        assert_eq!(
+            set.resolve(
+                "surface",
+                &BTreeMap::from([("theme".into(), "missing".into())])
+            ),
+            Ok(&VariableValue::Color("#f00".into()))
+        );
     }
 }
