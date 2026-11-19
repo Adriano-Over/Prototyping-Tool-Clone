@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// Two-dimensional affine transform: x' = a*x + c*y + e, y' = b*x + d*y + f.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Affine {
     pub a: f64,
     pub b: f64,
@@ -26,14 +27,15 @@ impl Default for Affine {
 }
 
 /// Untransformed node dimensions.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Size {
     pub width: f64,
     pub height: f64,
 }
 
 /// Initial native scene node categories.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     Frame,
     Section,
@@ -47,7 +49,7 @@ pub enum NodeKind {
 }
 
 /// A scene node; child IDs are ordered from back to front.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
     pub kind: NodeKind,
@@ -59,7 +61,7 @@ pub struct Node {
 }
 
 /// A page stores a single rooted node tree keyed by stable IDs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page {
     pub id: String,
     pub name: String,
@@ -85,6 +87,19 @@ impl fmt::Display for SceneError {
 impl std::error::Error for SceneError {}
 
 impl Page {
+    /// Decodes a native scene page and validates its hierarchy and geometry.
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        let page: Self = serde_json::from_str(json).map_err(|error| error.to_string())?;
+        page.validate().map_err(|error| error.to_string())?;
+        Ok(page)
+    }
+
+    /// Validates and encodes a native scene page as JSON.
+    pub fn to_json(&self) -> Result<String, String> {
+        self.validate().map_err(|error| error.to_string())?;
+        serde_json::to_string(self).map_err(|error| error.to_string())
+    }
+
     /// Validates node references, geometry, cycles, and single-parent ownership.
     pub fn validate(&self) -> Result<(), SceneError> {
         if self.id.is_empty() || self.root.is_empty() || self.nodes.keys().any(String::is_empty) {
@@ -196,5 +211,39 @@ mod tests {
             page(&[("root", node(&[])), ("orphan", node(&[]))]).validate(),
             Err(SceneError::UnreachableNode("orphan".into()))
         );
+    }
+
+    #[test]
+    fn json_round_trip_preserves_order_geometry_and_layer_properties() {
+        let mut p = page(&[
+            ("root", node(&["back", "front"])),
+            ("back", node(&[])),
+            ("front", node(&[])),
+        ]);
+        let front = p.nodes.get_mut("front").unwrap();
+        front.kind = NodeKind::Text;
+        front.name = "Title".into();
+        front.transform.e = 42.5;
+        front.visible = false;
+        front.locked = true;
+        let encoded = p.to_json().unwrap();
+        assert_eq!(Page::from_json(&encoded).unwrap(), p);
+        assert_eq!(
+            Page::from_json(&encoded).unwrap().nodes["root"].children,
+            ["back", "front"]
+        );
+        assert!(encoded.contains("\"kind\":\"text\""));
+    }
+
+    #[test]
+    fn json_io_rejects_invalid_scene_and_malformed_input() {
+        let invalid = page(&[("root", node(&["missing"]))]);
+        assert!(invalid.to_json().unwrap_err().contains("MissingNode"));
+        let raw = serde_json::to_string(&invalid).unwrap();
+        assert!(Page::from_json(&raw).unwrap_err().contains("MissingNode"));
+        assert!(Page::from_json("{invalid").is_err());
+        let mut bad_geometry = page(&[("root", node(&[]))]);
+        bad_geometry.nodes.get_mut("root").unwrap().size.height = -1.0;
+        assert!(bad_geometry.to_json().is_err());
     }
 }
