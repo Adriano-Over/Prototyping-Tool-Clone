@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -41,8 +41,7 @@ pub struct Size {
 }
 
 /// Initial native scene node categories.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
     Frame,
     Section,
@@ -53,6 +52,58 @@ pub enum NodeKind {
     Text,
     Image,
     Vector,
+    Polygon,
+    Star,
+    Line,
+    Arrow,
+    Instance,
+    /// An unrecognized kind retained until the model supports it.
+    Unknown(String),
+}
+
+impl Serialize for NodeKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match self {
+            Self::Frame => "frame",
+            Self::Section => "section",
+            Self::Slice => "slice",
+            Self::Rectangle => "rectangle",
+            Self::Ellipse => "ellipse",
+            Self::Group => "group",
+            Self::Text => "text",
+            Self::Image => "image",
+            Self::Vector => "vector",
+            Self::Polygon => "polygon",
+            Self::Star => "star",
+            Self::Line => "line",
+            Self::Arrow => "arrow",
+            Self::Instance => "instance",
+            Self::Unknown(value) => value,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeKind {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let kind = String::deserialize(deserializer)?;
+        Ok(match kind.as_str() {
+            "frame" => Self::Frame,
+            "section" => Self::Section,
+            "slice" => Self::Slice,
+            "rectangle" => Self::Rectangle,
+            "ellipse" => Self::Ellipse,
+            "group" => Self::Group,
+            "text" => Self::Text,
+            "image" => Self::Image,
+            "vector" => Self::Vector,
+            "polygon" => Self::Polygon,
+            "star" => Self::Star,
+            "line" => Self::Line,
+            "arrow" => Self::Arrow,
+            "instance" => Self::Instance,
+            _ => Self::Unknown(kind),
+        })
+    }
 }
 
 /// A scene node; child IDs are ordered from back to front.
@@ -293,6 +344,20 @@ mod tests {
         source["nodes"]["root"]["transform"]["future_transform"] = serde_json::json!(7);
         source["nodes"]["root"]["size"]["future_size"] = serde_json::json!("x");
         let loaded = Page::from_json(&source.to_string()).unwrap();
+        let restored: serde_json::Value = serde_json::from_str(&loaded.to_json().unwrap()).unwrap();
+        assert_eq!(restored, source);
+    }
+
+    #[test]
+    fn unknown_node_kind_round_trips_without_changing_its_name_or_data() {
+        let mut source = serde_json::to_value(page(&[("root", node(&[]))])).unwrap();
+        source["nodes"]["root"]["kind"] = serde_json::json!("future_shape");
+        source["nodes"]["root"]["future_shape_data"] = serde_json::json!({"points": [1, 2, 3]});
+        let loaded = Page::from_json(&source.to_string()).unwrap();
+        assert_eq!(
+            loaded.nodes["root"].kind,
+            NodeKind::Unknown("future_shape".into())
+        );
         let restored: serde_json::Value = serde_json::from_str(&loaded.to_json().unwrap()).unwrap();
         assert_eq!(restored, source);
     }
